@@ -1,0 +1,764 @@
+name: Build owner-bound CAPA artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform_source_revision:
+        description: Exact lowercase 40-hex revision of github.com/appthrust/platform
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+jobs:
+  build-owner-bound-artifact:
+    name: Build and sign owner-bound CAPA image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      REGISTRY_IMAGE: ghcr.io/appthrust/platform/cluster-api-provider-aws
+      UPSTREAM_TAG: v2.13.0
+      UPSTREAM_TAG_OBJECT: 9d3c4c0c07e739cd0a0d616adf76f2a294ec91de
+      UPSTREAM_COMMIT: a84670fca02690c9e644fadcbbbf967a6e6f89d6
+      PLATFORM_SOURCE_REVISION: ${{ inputs.platform_source_revision }}
+      PLATFORM_SOURCE_DIR: ${{ runner.temp }}/platform-source
+      EVIDENCE_DIR: ${{ runner.temp }}/owner-bound-capa-evidence
+
+    steps:
+      - name: Require trusted CAPA publisher identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_repository="appthrust/cluster-api-provider-aws"
+          expected_workflow_ref="${expected_repository}/.github/workflows/owner-bound-artifact.yaml@${GITHUB_REF}"
+          [[ "${GITHUB_REPOSITORY}" == "${expected_repository}" ]] || {
+            echo "owner-bound artifact publication is restricted to ${expected_repository}" >&2
+            exit 65
+          }
+          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_workflow_ref}" ]] || {
+            echo "workflow identity is not the trusted owner-bound artifact workflow" >&2
+            exit 65
+          }
+
+      - name: Check out downstream source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate exact Platform revision input
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${PLATFORM_SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "platform_source_revision must be a lowercase 40-hex commit ID" >&2
+            exit 64
+          }
+
+      - name: Check out exact Platform source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: appthrust/platform
+          ref: ${{ inputs.platform_source_revision }}
+          path: platform-source
+          fetch-depth: 1
+          persist-credentials: false
+          token: ${{ secrets.APPTHRUST_PLATFORM_READ_TOKEN }}
+
+      - name: Isolate exact Platform source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv platform-source "${PLATFORM_SOURCE_DIR}"
+
+      - name: Preflight exact Platform descriptor contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(git -C "${PLATFORM_SOURCE_DIR}" rev-parse HEAD)" == "${PLATFORM_SOURCE_REVISION}" ]] || {
+            echo "Platform checkout did not resolve the requested revision" >&2
+            exit 65
+          }
+          [[ -z "$(git -C "${PLATFORM_SOURCE_DIR}" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Platform checkout is not clean" >&2
+            exit 65
+          }
+          required_files=(
+            "hack/capa-artifacts/owner-bound-capa-artifact.schema.json"
+            "hack/capa-artifacts/owner-bound-capa-artifact.ts"
+            "hack/capa-artifacts/seal-owner-bound-capa-artifact.ts"
+          )
+          for relative_path in "${required_files[@]}"; do
+            file="${PLATFORM_SOURCE_DIR}/${relative_path}"
+            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
+              echo "Platform revision lacks required owner-bound descriptor file: ${relative_path}" >&2
+              exit 65
+            }
+            git -C "${PLATFORM_SOURCE_DIR}" ls-files --error-unmatch -- "${relative_path}" >/dev/null
+          done
+
+      - name: Set up Platform sealing runtime
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.14"
+
+      - name: Bind immutable source identities
+        id: identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sha256_file() {
+            local file="$1" label="$2" digest
+            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
+              echo "${label} is absent, indirect, or empty" >&2
+              exit 65
+            }
+            digest="sha256:$(sha256sum "${file}" | awk '{print $1}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "${label} has an invalid SHA-256 digest" >&2
+              exit 65
+            }
+            printf '%s\n' "${digest}"
+          }
+
+          [[ "${GITHUB_SHA}" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "downstream workflow revision is not a lowercase 40-hex commit ID" >&2
+            exit 65
+          }
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]] || {
+            echo "downstream checkout did not resolve the triggering commit" >&2
+            exit 65
+          }
+          [[ "$(git rev-parse "${UPSTREAM_TAG}^{tag}")" == "${UPSTREAM_TAG_OBJECT}" ]] || {
+            echo "unexpected upstream tag object" >&2
+            exit 65
+          }
+          [[ "$(git rev-parse "${UPSTREAM_TAG}^{commit}")" == "${UPSTREAM_COMMIT}" ]] || {
+            echo "unexpected upstream tag commit" >&2
+            exit 65
+          }
+          git merge-base --is-ancestor "${UPSTREAM_COMMIT}" HEAD || {
+            echo "downstream source is not based on the required upstream commit" >&2
+            exit 65
+          }
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "downstream source is not clean" >&2
+            exit 65
+          }
+          [[ "$(git -C "${PLATFORM_SOURCE_DIR}" rev-parse HEAD)" == "${PLATFORM_SOURCE_REVISION}" ]] || {
+            echo "Platform checkout did not resolve the requested revision" >&2
+            exit 65
+          }
+          [[ -z "$(git -C "${PLATFORM_SOURCE_DIR}" status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo "Platform source is not clean" >&2
+            exit 65
+          }
+          [[ -f "${PLATFORM_SOURCE_DIR}/go.mod" && -f "${PLATFORM_SOURCE_DIR}/model/go.mod" && -d "${PLATFORM_SOURCE_DIR}/pkg/capacityfence" ]] || {
+            echo "Platform revision lacks the owner-bound capacity-fence source layout" >&2
+            exit 65
+          }
+
+          downstream_commit="$(git rev-parse HEAD)"
+          mkdir -p "${EVIDENCE_DIR}"
+          upstream_archive="${RUNNER_TEMP}/upstream-v2.13.0-source.tar"
+          downstream_archive="${RUNNER_TEMP}/downstream-source.tar"
+          downstream_tree_inventory="${RUNNER_TEMP}/downstream-tree.inventory"
+          downstream_patch="${RUNNER_TEMP}/upstream-to-downstream.patch"
+          platform_model_inventory="${RUNNER_TEMP}/platform-model-subtree.inventory"
+          workspace_manifest="${RUNNER_TEMP}/owner-bound-capa.go.work"
+
+          git archive --format=tar "${UPSTREAM_COMMIT}" >"${upstream_archive}"
+          git archive --format=tar "${downstream_commit}" >"${downstream_archive}"
+          git ls-tree -r --full-tree -z "${downstream_commit}" >"${downstream_tree_inventory}"
+          git diff --binary --full-index "${UPSTREAM_COMMIT}" "${downstream_commit}" >"${downstream_patch}"
+          [[ -s "${downstream_patch}" ]] || {
+            echo "upstream-to-downstream patch range is empty; no-op downstream identities are forbidden" >&2
+            exit 65
+          }
+          git -C "${PLATFORM_SOURCE_DIR}" ls-tree -r --full-tree -z "${PLATFORM_SOURCE_REVISION}" -- model >"${platform_model_inventory}"
+          printf '%s\n' \
+            'go 1.26.6' \
+            '' \
+            'use (' \
+            '  /workspace/capa' \
+            '  /workspace/platform' \
+            '  /workspace/platform/model' \
+            ')' \
+            >"${workspace_manifest}"
+
+          upstream_source_digest="$(sha256_file "${upstream_archive}" "upstream source archive")"
+          downstream_source_digest="$(sha256_file "${downstream_archive}" "downstream source archive")"
+          downstream_tree_digest="$(sha256_file "${downstream_tree_inventory}" "downstream tree inventory")"
+          downstream_patch_digest="$(sha256_file "${downstream_patch}" "upstream-to-downstream patch range")"
+          platform_model_subtree_digest="$(sha256_file "${platform_model_inventory}" "Platform model subtree inventory")"
+          workspace_digest="$(sha256_file "${workspace_manifest}" "generated go.work manifest")"
+
+          {
+            echo "downstream_commit=${downstream_commit}"
+            echo "upstream_source_digest=${upstream_source_digest}"
+            echo "downstream_source_digest=${downstream_source_digest}"
+            echo "downstream_tree_digest=${downstream_tree_digest}"
+            echo "downstream_patch_digest=${downstream_patch_digest}"
+            echo "platform_model_subtree_digest=${platform_model_subtree_digest}"
+            echo "workspace_digest=${workspace_digest}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.6'
+
+      - name: Run focused owner-bound checks
+        run: ./hack/appthrust/verify-capacity-fence.sh "${PLATFORM_SOURCE_DIR}"
+
+      - name: Recheck source identities immediately before build
+        shell: bash
+        env:
+          DOWNSTREAM_COMMIT: ${{ steps.identities.outputs.downstream_commit }}
+          UPSTREAM_SOURCE_DIGEST: ${{ steps.identities.outputs.upstream_source_digest }}
+          DOWNSTREAM_SOURCE_DIGEST: ${{ steps.identities.outputs.downstream_source_digest }}
+          DOWNSTREAM_TREE_DIGEST: ${{ steps.identities.outputs.downstream_tree_digest }}
+          DOWNSTREAM_PATCH_DIGEST: ${{ steps.identities.outputs.downstream_patch_digest }}
+          PLATFORM_MODEL_SUBTREE_DIGEST: ${{ steps.identities.outputs.platform_model_subtree_digest }}
+          WORKSPACE_DIGEST: ${{ steps.identities.outputs.workspace_digest }}
+        run: |
+          set -euo pipefail
+
+          sha256_file() {
+            local file="$1" label="$2" digest
+            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
+              echo "${label} is absent, indirect, or empty" >&2
+              exit 65
+            }
+            digest="sha256:$(sha256sum "${file}" | awk '{print $1}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
+            printf '%s\n' "${digest}"
+          }
+          require_equal() {
+            local actual="$1" expected="$2" label="$3"
+            [[ "${actual}" == "${expected}" ]] || {
+              echo "${label} changed after immutable source binding" >&2
+              exit 65
+            }
+          }
+
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 65
+          [[ -z "$(git -C "${PLATFORM_SOURCE_DIR}" status --porcelain=v1 --untracked-files=all)" ]] || exit 65
+          require_equal "$(git rev-parse HEAD)" "${DOWNSTREAM_COMMIT}" "downstream commit"
+          require_equal "$(git rev-parse "${UPSTREAM_TAG}^{tag}")" "${UPSTREAM_TAG_OBJECT}" "upstream tag object"
+          require_equal "$(git rev-parse "${UPSTREAM_TAG}^{commit}")" "${UPSTREAM_COMMIT}" "upstream commit"
+          git merge-base --is-ancestor "${UPSTREAM_COMMIT}" "${DOWNSTREAM_COMMIT}"
+          require_equal "$(git -C "${PLATFORM_SOURCE_DIR}" rev-parse HEAD)" "${PLATFORM_SOURCE_REVISION}" "Platform revision"
+
+          recheck_dir="${RUNNER_TEMP}/owner-bound-source-recheck-before-build"
+          mkdir -p "${recheck_dir}"
+          git archive --format=tar "${UPSTREAM_COMMIT}" >"${recheck_dir}/upstream-source.tar"
+          git archive --format=tar "${DOWNSTREAM_COMMIT}" >"${recheck_dir}/downstream-source.tar"
+          git ls-tree -r --full-tree -z "${DOWNSTREAM_COMMIT}" >"${recheck_dir}/downstream-tree.inventory"
+          git diff --binary --full-index "${UPSTREAM_COMMIT}" "${DOWNSTREAM_COMMIT}" >"${recheck_dir}/upstream-to-downstream.patch"
+          [[ -s "${recheck_dir}/upstream-to-downstream.patch" ]] || exit 65
+          git -C "${PLATFORM_SOURCE_DIR}" ls-tree -r --full-tree -z "${PLATFORM_SOURCE_REVISION}" -- model >"${recheck_dir}/platform-model-subtree.inventory"
+          cp "${RUNNER_TEMP}/owner-bound-capa.go.work" "${recheck_dir}/go.work"
+
+          require_equal "$(sha256_file "${recheck_dir}/upstream-source.tar" "upstream source archive")" "${UPSTREAM_SOURCE_DIGEST}" "upstream source archive"
+          require_equal "$(sha256_file "${recheck_dir}/downstream-source.tar" "downstream source archive")" "${DOWNSTREAM_SOURCE_DIGEST}" "downstream source archive"
+          require_equal "$(sha256_file "${recheck_dir}/downstream-tree.inventory" "downstream tree inventory")" "${DOWNSTREAM_TREE_DIGEST}" "downstream tree inventory"
+          require_equal "$(sha256_file "${recheck_dir}/upstream-to-downstream.patch" "upstream-to-downstream patch range")" "${DOWNSTREAM_PATCH_DIGEST}" "upstream-to-downstream patch range"
+          require_equal "$(sha256_file "${recheck_dir}/platform-model-subtree.inventory" "Platform model subtree inventory")" "${PLATFORM_MODEL_SUBTREE_DIGEST}" "Platform model subtree inventory"
+          require_equal "$(sha256_file "${recheck_dir}/go.work" "generated go.work manifest")" "${WORKSPACE_DIGEST}" "generated go.work manifest"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Authenticate to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push linux/amd64 image by digest
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: Dockerfile.appthrust
+          build-contexts: |
+            platform-source=${{ runner.temp }}/platform-source
+          platforms: linux/amd64
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max,version=v1
+          sbom: generator=docker.io/docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
+
+      - name: Read back immutable linux/amd64 image digest
+        id: image
+        shell: bash
+        env:
+          BUILD_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${BUILD_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "build did not return an immutable image digest" >&2
+            exit 65
+          }
+          registry_readback="${RUNNER_TEMP}/owner-bound-capa-registry-manifest.json"
+          docker buildx imagetools inspect "${REGISTRY_IMAGE}@${BUILD_DIGEST}" --raw >"${registry_readback}"
+          [[ -s "${registry_readback}" && ! -L "${registry_readback}" ]] || {
+            echo "registry did not return an immutable image manifest" >&2
+            exit 65
+          }
+          pushed_digest="sha256:$(sha256sum "${registry_readback}" | awk '{print $1}')"
+          [[ "${pushed_digest}" == "${BUILD_DIGEST}" ]] || {
+            echo "registry readback digest does not match the pushed image" >&2
+            exit 65
+          }
+          echo "digest=${pushed_digest}" >>"${GITHUB_OUTPUT}"
+
+      - name: Materialize immutable CAPA provider manifest
+        id: provider_manifest
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
+          GOWORK=off make -C hack/tools bin/kustomize
+          renderer="${GITHUB_WORKSPACE}/hack/tools/bin/kustomize"
+          [[ -x "${renderer}" ]] || {
+            echo "exact CAPA kustomize renderer was not built" >&2
+            exit 65
+          }
+
+          manifest_dir="${RUNNER_TEMP}/owner-bound-capa-provider-manifest"
+          mkdir -p "${manifest_dir}" "${EVIDENCE_DIR}"
+          "${renderer}" build config/default >"${manifest_dir}/source-manifest.yaml"
+          cat >"${manifest_dir}/kustomization.yaml" <<EOF
+          apiVersion: kustomize.config.k8s.io/v1beta1
+          kind: Kustomization
+          resources:
+          - source-manifest.yaml
+          images:
+          - name: gcr.io/k8s-staging-cluster-api-aws/cluster-api-aws-controller
+            newName: ${REGISTRY_IMAGE}
+            digest: ${IMAGE_DIGEST}
+          EOF
+          provider_manifest="${EVIDENCE_DIR}/infrastructure-components.yaml"
+          "${renderer}" build "${manifest_dir}" >"${provider_manifest}"
+          [[ -s "${provider_manifest}" && ! -L "${provider_manifest}" ]] || {
+            echo "generated provider manifest is absent, indirect, or empty" >&2
+            exit 65
+          }
+          ! grep -F -- '--watch-filter=' "${provider_manifest}" >/dev/null || {
+            echo "provider manifest must not invent a watch-filter value" >&2
+            exit 65
+          }
+          grep -F -- "${REGISTRY_IMAGE}@${IMAGE_DIGEST}" "${provider_manifest}" >/dev/null || {
+            echo "provider manifest does not reference the exact owner-bound image digest" >&2
+            exit 65
+          }
+          python3 - "${provider_manifest}" "${EVIDENCE_DIR}" <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import re
+          import sys
+
+          manifest_path = Path(sys.argv[1])
+          evidence_dir = Path(sys.argv[2])
+          service_account_name = b"capa-controller-manager"
+          deployment_name = b"capa-controller-manager"
+          rbac_kinds = {b"Role", b"ClusterRole", b"RoleBinding", b"ClusterRoleBinding"}
+
+          def fail(message: str) -> None:
+              raise SystemExit(f"provider manifest component digest: {message}")
+
+          def field(document: bytes, name: bytes) -> bytes:
+              matches = re.findall(
+                  rb"(?m)^" + re.escape(name) + rb":[ \t]*([^#\r\n]+?)[ \t]*(?:#.*)?\r?$",
+                  document,
+              )
+              if len(matches) != 1:
+                  fail(f"document has {len(matches)} top-level {name.decode()} fields")
+              return matches[0].strip().strip(b"'\"")
+
+          def metadata_name(document: bytes) -> bytes:
+              metadata = re.search(
+                  rb"(?m)^metadata:[ \t]*(?:#.*)?\r?\n((?:^(?:  |\t).*(?:\r?\n|$))*)",
+                  document,
+              )
+              if metadata is None:
+                  fail("document has no parseable metadata block")
+              names = re.findall(
+                  rb"(?m)^(?:  |\t)name:[ \t]*([^#\r\n]+?)[ \t]*(?:#.*)?\r?$",
+                  metadata.group(1),
+              )
+              if len(names) != 1:
+                  fail(f"metadata has {len(names)} name fields")
+              return names[0].strip().strip(b"'\"")
+
+          documents = []
+          for raw_document in re.split(rb"(?m)^---[ \t]*(?:\r?\n|$)", manifest_path.read_bytes()):
+              normalized = raw_document.strip()
+              if not normalized:
+                  continue
+              normalized = normalized.replace(b"\r\n", b"\n") + b"\n"
+              kind = field(normalized, b"kind")
+              documents.append((kind, metadata_name(normalized), normalized))
+
+          if not documents:
+              fail("manifest contains no Kubernetes documents")
+
+          def canonical_bytes(name: str, selected: list[tuple[bytes, bytes, bytes]]) -> None:
+              if not selected:
+                  fail(f"{name} object set is empty")
+              content = b"---\n".join(
+                  document
+                  for _, _, document in sorted(selected, key=lambda item: (item[0], item[1], item[2]))
+              )
+              output = evidence_dir / f"infrastructure-components.{name}.yaml"
+              output.write_bytes(content)
+              if not content:
+                  fail(f"{name} canonical bytes are empty")
+
+          crds = [document for document in documents if document[0] == b"CustomResourceDefinition"]
+          rbac = [document for document in documents if document[0] in rbac_kinds]
+          service_accounts = [
+              document
+              for document in documents
+              if document[0] == b"ServiceAccount" and document[1] == service_account_name
+          ]
+          deployments = [
+              document
+              for document in documents
+              if document[0] == b"Deployment" and document[1] == deployment_name
+          ]
+          if len(service_accounts) != 1:
+              fail(f"expected exactly one capa-controller-manager ServiceAccount, found {len(service_accounts)}")
+          if len(deployments) != 1:
+              fail(f"expected exactly one capa-controller-manager Deployment, found {len(deployments)}")
+
+          canonical_bytes("crds", crds)
+          canonical_bytes("rbac", rbac)
+          canonical_bytes("service-account", service_accounts)
+          canonical_bytes("deployment", deployments)
+          PY
+
+          sha256_file() {
+            local file="$1" label="$2" digest
+            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
+              echo "${label} is absent, indirect, or empty" >&2
+              exit 65
+            }
+            digest="sha256:$(sha256sum "${file}" | awk '{print $1}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "${label} has an invalid SHA-256 digest" >&2
+              exit 65
+            }
+            [[ "${digest}" != "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" ]] || {
+              echo "${label} must not be empty bytes" >&2
+              exit 65
+            }
+            printf '%s\n' "${digest}"
+          }
+
+          manifest_digest="$(sha256_file "${provider_manifest}" "provider manifest")"
+          crds_digest="$(sha256_file "${EVIDENCE_DIR}/infrastructure-components.crds.yaml" "CRD documents")"
+          rbac_digest="$(sha256_file "${EVIDENCE_DIR}/infrastructure-components.rbac.yaml" "RBAC documents")"
+          service_account_digest="$(sha256_file "${EVIDENCE_DIR}/infrastructure-components.service-account.yaml" "capa-controller-manager ServiceAccount")"
+          deployment_digest="$(sha256_file "${EVIDENCE_DIR}/infrastructure-components.deployment.yaml" "capa-controller-manager Deployment")"
+          {
+            echo "digest=${manifest_digest}"
+            echo "crds_digest=${crds_digest}"
+            echo "rbac_digest=${rbac_digest}"
+            echo "service_account_digest=${service_account_digest}"
+            echo "deployment_digest=${deployment_digest}"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v2.5.3
+
+      - name: Capture and verify exact image evidence
+        id: evidence
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          sha256_file() {
+            local file="$1" label="$2" digest
+            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
+              echo "${label} is absent, indirect, or empty" >&2
+              exit 65
+            }
+            digest="sha256:$(sha256sum "${file}" | awk '{print $1}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "${label} has an invalid SHA-256 digest" >&2
+              exit 65
+            }
+            printf '%s\n' "${digest}"
+          }
+
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
+          image_reference="${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
+          sbom="${EVIDENCE_DIR}/image.sbom.json"
+          provenance="${EVIDENCE_DIR}/image.provenance.jsonl"
+          signature_bundle="${EVIDENCE_DIR}/image.signature.bundle.json"
+          issuer="https://token.actions.githubusercontent.com"
+          certificate_identity="https://github.com/${GITHUB_WORKFLOW_REF}"
+
+          cosign download sbom "${image_reference}" >"${sbom}"
+          cosign download attestation --predicate-type https://slsa.dev/provenance/v1 "${image_reference}" >"${provenance}"
+          jq -e 'type == "object" or type == "array"' "${sbom}" >/dev/null || {
+            echo "SBOM evidence is not valid JSON" >&2
+            exit 65
+          }
+          jq -s -e --arg digest "${IMAGE_DIGEST#sha256:}" '
+            [
+              .[]
+              | (.payload | @base64d | fromjson) as $statement
+              | select(
+                  $statement.predicateType == "https://slsa.dev/provenance/v1" and
+                  ($statement.predicate | type == "object") and
+                  ($statement.subject | type == "array") and
+                  ([ $statement.subject[] | select(.digest.sha256 == $digest) ] | length == 1)
+                )
+            ]
+            | length == 1
+          ' "${provenance}" >/dev/null || {
+            echo "provenance JSONL must contain exactly one SLSA v1 predicate for the exact image digest" >&2
+            exit 65
+          }
+          sbom_digest="$(sha256_file "${sbom}" "SBOM evidence")"
+          provenance_digest="$(sha256_file "${provenance}" "provenance evidence")"
+
+          cosign sign --yes --bundle "${signature_bundle}" "${image_reference}"
+          cosign verify \
+            --bundle "${signature_bundle}" \
+            --certificate-identity "${certificate_identity}" \
+            --certificate-oidc-issuer "${issuer}" \
+            "${image_reference}" >/dev/null
+          signature_digest="$(sha256_file "${signature_bundle}" "signature bundle")"
+
+          {
+            echo "sbom_identity=${image_reference}"
+            echo "sbom_digest=${sbom_digest}"
+            echo "provenance_identity=${image_reference}"
+            echo "provenance_digest=${provenance_digest}"
+            echo "signature_identity=${image_reference}"
+            echo "signature_issuer=${issuer}"
+            echo "signature_digest=${signature_digest}"
+          } >>"${GITHUB_OUTPUT}"
+
+
+      - name: Verify anonymous public pull for the signed image
+        id: publication
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
+          image_reference="${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
+          unset DOCKER_CONFIG DOCKER_AUTH_CONFIG
+          docker logout ghcr.io >/dev/null 2>&1 || true
+          if [[ -f "${HOME}/.docker/config.json" ]]; then
+            jq -e '
+              ((.auths // {}) | has("ghcr.io") | not) and
+              ((.credHelpers // {}) | has("ghcr.io") | not)
+            ' "${HOME}/.docker/config.json" >/dev/null || {
+              echo "GHCR credentials remain after authenticated publication" >&2
+              exit 65
+            }
+          fi
+
+          anonymous_docker_config="$(mktemp -d)"
+          trap 'rm -rf "${anonymous_docker_config}"' EXIT
+          [[ ! -e "${anonymous_docker_config}/config.json" ]] || exit 65
+          DOCKER_CONFIG="${anonymous_docker_config}" docker pull "${image_reference}"
+          DOCKER_CONFIG="${anonymous_docker_config}" docker image inspect \
+            --format '{{json .RepoDigests}}' "${image_reference}" \
+            | jq -e --arg image_reference "${image_reference}" '
+                type == "array" and index($image_reference) != null
+              ' >/dev/null || {
+                echo "anonymous pull did not read back the exact image digest" >&2
+                exit 65
+              }
+          jq -n \
+            --arg repository "${REGISTRY_IMAGE}" \
+            --arg digest "${IMAGE_DIGEST}" \
+            '{repository: $repository, digest: $digest, visibility: "public", anonymousPullVerified: true}' \
+            >"${EVIDENCE_DIR}/image.publication.json"
+          [[ -s "${EVIDENCE_DIR}/image.publication.json" && ! -L "${EVIDENCE_DIR}/image.publication.json" ]] || exit 65
+          {
+            echo "visibility=public"
+            echo "anonymous_pull_verified=true"
+          } >>"${GITHUB_OUTPUT}"
+
+      - name: Generate and seal owner-bound descriptor
+        shell: bash
+        env:
+          DOWNSTREAM_COMMIT: ${{ steps.identities.outputs.downstream_commit }}
+          UPSTREAM_SOURCE_DIGEST: ${{ steps.identities.outputs.upstream_source_digest }}
+          DOWNSTREAM_SOURCE_DIGEST: ${{ steps.identities.outputs.downstream_source_digest }}
+          DOWNSTREAM_TREE_DIGEST: ${{ steps.identities.outputs.downstream_tree_digest }}
+          DOWNSTREAM_PATCH_DIGEST: ${{ steps.identities.outputs.downstream_patch_digest }}
+          PLATFORM_MODEL_SUBTREE_DIGEST: ${{ steps.identities.outputs.platform_model_subtree_digest }}
+          WORKSPACE_DIGEST: ${{ steps.identities.outputs.workspace_digest }}
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          PROVIDER_MANIFEST_DIGEST: ${{ steps.provider_manifest.outputs.digest }}
+          CRDS_DIGEST: ${{ steps.provider_manifest.outputs.crds_digest }}
+          RBAC_DIGEST: ${{ steps.provider_manifest.outputs.rbac_digest }}
+          SERVICE_ACCOUNT_DIGEST: ${{ steps.provider_manifest.outputs.service_account_digest }}
+          DEPLOYMENT_DIGEST: ${{ steps.provider_manifest.outputs.deployment_digest }}
+          SBOM_IDENTITY: ${{ steps.evidence.outputs.sbom_identity }}
+          SBOM_DIGEST: ${{ steps.evidence.outputs.sbom_digest }}
+          PROVENANCE_IDENTITY: ${{ steps.evidence.outputs.provenance_identity }}
+          PROVENANCE_DIGEST: ${{ steps.evidence.outputs.provenance_digest }}
+          SIGNATURE_IDENTITY: ${{ steps.evidence.outputs.signature_identity }}
+          SIGNATURE_ISSUER: ${{ steps.evidence.outputs.signature_issuer }}
+          SIGNATURE_DIGEST: ${{ steps.evidence.outputs.signature_digest }}
+          PUBLICATION_VISIBILITY: ${{ steps.publication.outputs.visibility }}
+          ANONYMOUS_PULL_VERIFIED: ${{ steps.publication.outputs.anonymous_pull_verified }}
+        run: |
+          set -euo pipefail
+          binding="${EVIDENCE_DIR}/owner-bound-capa-binding.json"
+          descriptor="${EVIDENCE_DIR}/owner-bound-capa-artifact.json"
+          python3 hack/appthrust/generate-owner-bound-binding.py \
+            --output "${binding}" \
+            --upstream-source-digest "${UPSTREAM_SOURCE_DIGEST}" \
+            --downstream-commit "${DOWNSTREAM_COMMIT}" \
+            --downstream-source-digest "${DOWNSTREAM_SOURCE_DIGEST}" \
+            --downstream-tree-digest "${DOWNSTREAM_TREE_DIGEST}" \
+            --downstream-patch-digest "${DOWNSTREAM_PATCH_DIGEST}" \
+            --platform-revision "${PLATFORM_SOURCE_REVISION}" \
+            --platform-model-subtree-digest "${PLATFORM_MODEL_SUBTREE_DIGEST}" \
+            --build-workspace-digest "${WORKSPACE_DIGEST}" \
+            --image-digest "${IMAGE_DIGEST}" \
+            --provider-manifest-digest "${PROVIDER_MANIFEST_DIGEST}" \
+            --crds-digest "${CRDS_DIGEST}" \
+            --rbac-digest "${RBAC_DIGEST}" \
+            --service-account-digest "${SERVICE_ACCOUNT_DIGEST}" \
+            --deployment-digest "${DEPLOYMENT_DIGEST}" \
+            --sbom-identity "${SBOM_IDENTITY}" \
+            --sbom-digest "${SBOM_DIGEST}" \
+            --provenance-identity "${PROVENANCE_IDENTITY}" \
+            --provenance-digest "${PROVENANCE_DIGEST}" \
+            --signature-identity "${SIGNATURE_IDENTITY}" \
+            --signature-issuer "${SIGNATURE_ISSUER}" \
+            --signature-digest "${SIGNATURE_DIGEST}" \
+            --publication-visibility "${PUBLICATION_VISIBILITY}" \
+            --anonymous-pull-verified "${ANONYMOUS_PULL_VERIFIED}"
+          bun "${PLATFORM_SOURCE_DIR}/hack/capa-artifacts/seal-owner-bound-capa-artifact.ts" "${binding}" "${descriptor}"
+          [[ -s "${binding}" && -s "${descriptor}" && ! -L "${binding}" && ! -L "${descriptor}" ]] || {
+            echo "binding or sealed descriptor was not created as a regular non-empty file" >&2
+            exit 65
+          }
+      - name: Sign and verify sealed descriptor
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_workflow_ref="appthrust/cluster-api-provider-aws/.github/workflows/owner-bound-artifact.yaml@${GITHUB_REF}"
+          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_workflow_ref}" ]] || {
+            echo "workflow identity changed before descriptor signing" >&2
+            exit 65
+          }
+          descriptor="${EVIDENCE_DIR}/owner-bound-capa-artifact.json"
+          descriptor_signature_bundle="${EVIDENCE_DIR}/owner-bound-capa-artifact.signature.bundle.json"
+          [[ -f "${descriptor}" && ! -L "${descriptor}" && -s "${descriptor}" && ! -e "${descriptor_signature_bundle}" ]] || {
+            echo "sealed descriptor or descriptor signature bundle path is invalid" >&2
+            exit 65
+          }
+          cosign sign-blob --yes --bundle "${descriptor_signature_bundle}" "${descriptor}"
+          cosign verify-blob \
+            --bundle "${descriptor_signature_bundle}" \
+            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${descriptor}" >/dev/null
+          [[ -f "${descriptor_signature_bundle}" && ! -L "${descriptor_signature_bundle}" && -s "${descriptor_signature_bundle}" ]] || {
+            echo "descriptor signature bundle was not created as a regular non-empty file" >&2
+            exit 65
+          }
+      - name: Recheck source identities after full evidence path
+        shell: bash
+        env:
+          DOWNSTREAM_COMMIT: ${{ steps.identities.outputs.downstream_commit }}
+          UPSTREAM_SOURCE_DIGEST: ${{ steps.identities.outputs.upstream_source_digest }}
+          DOWNSTREAM_SOURCE_DIGEST: ${{ steps.identities.outputs.downstream_source_digest }}
+          DOWNSTREAM_TREE_DIGEST: ${{ steps.identities.outputs.downstream_tree_digest }}
+          DOWNSTREAM_PATCH_DIGEST: ${{ steps.identities.outputs.downstream_patch_digest }}
+          PLATFORM_MODEL_SUBTREE_DIGEST: ${{ steps.identities.outputs.platform_model_subtree_digest }}
+          WORKSPACE_DIGEST: ${{ steps.identities.outputs.workspace_digest }}
+        run: |
+          set -euo pipefail
+
+          sha256_file() {
+            local file="$1" label="$2" digest
+            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
+              echo "${label} is absent, indirect, or empty" >&2
+              exit 65
+            }
+            digest="sha256:$(sha256sum "${file}" | awk '{print $1}')"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
+            printf '%s\n' "${digest}"
+          }
+          require_equal() {
+            local actual="$1" expected="$2" label="$3"
+            [[ "${actual}" == "${expected}" ]] || {
+              echo "${label} changed after immutable source binding" >&2
+              exit 65
+            }
+          }
+
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || exit 65
+          [[ -z "$(git -C "${PLATFORM_SOURCE_DIR}" status --porcelain=v1 --untracked-files=all)" ]] || exit 65
+          require_equal "$(git rev-parse HEAD)" "${DOWNSTREAM_COMMIT}" "downstream commit"
+          require_equal "$(git rev-parse "${UPSTREAM_TAG}^{tag}")" "${UPSTREAM_TAG_OBJECT}" "upstream tag object"
+          require_equal "$(git rev-parse "${UPSTREAM_TAG}^{commit}")" "${UPSTREAM_COMMIT}" "upstream commit"
+          git merge-base --is-ancestor "${UPSTREAM_COMMIT}" "${DOWNSTREAM_COMMIT}"
+          require_equal "$(git -C "${PLATFORM_SOURCE_DIR}" rev-parse HEAD)" "${PLATFORM_SOURCE_REVISION}" "Platform revision"
+
+          recheck_dir="${RUNNER_TEMP}/owner-bound-source-recheck-after-evidence"
+          mkdir -p "${recheck_dir}"
+          git archive --format=tar "${UPSTREAM_COMMIT}" >"${recheck_dir}/upstream-source.tar"
+          git archive --format=tar "${DOWNSTREAM_COMMIT}" >"${recheck_dir}/downstream-source.tar"
+          git ls-tree -r --full-tree -z "${DOWNSTREAM_COMMIT}" >"${recheck_dir}/downstream-tree.inventory"
+          git diff --binary --full-index "${UPSTREAM_COMMIT}" "${DOWNSTREAM_COMMIT}" >"${recheck_dir}/upstream-to-downstream.patch"
+          [[ -s "${recheck_dir}/upstream-to-downstream.patch" ]] || exit 65
+          git -C "${PLATFORM_SOURCE_DIR}" ls-tree -r --full-tree -z "${PLATFORM_SOURCE_REVISION}" -- model >"${recheck_dir}/platform-model-subtree.inventory"
+          cp "${RUNNER_TEMP}/owner-bound-capa.go.work" "${recheck_dir}/go.work"
+
+          require_equal "$(sha256_file "${recheck_dir}/upstream-source.tar" "upstream source archive")" "${UPSTREAM_SOURCE_DIGEST}" "upstream source archive"
+          require_equal "$(sha256_file "${recheck_dir}/downstream-source.tar" "downstream source archive")" "${DOWNSTREAM_SOURCE_DIGEST}" "downstream source archive"
+          require_equal "$(sha256_file "${recheck_dir}/downstream-tree.inventory" "downstream tree inventory")" "${DOWNSTREAM_TREE_DIGEST}" "downstream tree inventory"
+          require_equal "$(sha256_file "${recheck_dir}/upstream-to-downstream.patch" "upstream-to-downstream patch range")" "${DOWNSTREAM_PATCH_DIGEST}" "upstream-to-downstream patch range"
+          require_equal "$(sha256_file "${recheck_dir}/platform-model-subtree.inventory" "Platform model subtree inventory")" "${PLATFORM_MODEL_SUBTREE_DIGEST}" "Platform model subtree inventory"
+          require_equal "$(sha256_file "${recheck_dir}/go.work" "generated go.work manifest")" "${WORKSPACE_DIGEST}" "generated go.work manifest"
+
+
+      - name: Upload owner-bound artifact evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: owner-bound-capa-artifact-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/owner-bound-capa-evidence/owner-bound-capa-binding.json
+            ${{ runner.temp }}/owner-bound-capa-evidence/owner-bound-capa-artifact.json
+            ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.yaml
+            ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.crds.yaml
+            ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.rbac.yaml
+            ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.service-account.yaml
+            ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.deployment.yaml
+            ${{ runner.temp }}/owner-bound-capa-evidence/image.sbom.json
+            ${{ runner.temp }}/owner-bound-capa-evidence/image.provenance.jsonl
+            ${{ runner.temp }}/owner-bound-capa-evidence/image.signature.bundle.json
+            ${{ runner.temp }}/owner-bound-capa-evidence/image.publication.json
+            ${{ runner.temp }}/owner-bound-capa-evidence/owner-bound-capa-artifact.signature.bundle.json
+          if-no-files-found: error
+          retention-days: 90
