@@ -45,5 +45,5 @@ go_work="${workspace}/go.work"
   GOWORK="${go_work}" go test -vet=off ./pkg/capacityfenceadapter ./pkg/cloud/services/ec2
   GOWORK="${go_work}" go build -o "${workspace}/manager" .
   go tool nm "${workspace}/manager" |
-    grep -Fq 'sigs.k8s.io/cluster-api-provider-aws/v2/pkg/capacityfenceadapter'
+    awk 'index($0, "sigs.k8s.io/cluster-api-provider-aws/v2/pkg/capacityfenceadapter") { found = 1 } END { exit found ? 0 : 1 }'
 )
