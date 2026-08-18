@@ -159,6 +159,8 @@ func TestCapacityFenceValidPermitPropagatesIdentitySetsTokenAndRecordsReceipt(t 
 	permit := newCapacityFenceTestPermit(identity, "permit-valid", "stable-client-token")
 	authorizer := newCapacityFenceTestAuthorizer(capacityFenceTestNow, permit)
 	service, ec2Mock, machineScope := newCapacityFenceCreateService(t, authorizer, identity)
+	ordinaryTagKey := "example.com/propagate-to-eni"
+	ordinaryTagValue := "ordinary-value"
 
 	ctx := context.WithValue(context.Background(), capacityFenceContextKey{}, "create")
 	ec2Mock.EXPECT().DescribeInstanceTypes(context.TODO(), gomock.Any()).Return(
@@ -172,12 +174,26 @@ func TestCapacityFenceValidPermitPropagatesIdentitySetsTokenAndRecordsReceipt(t 
 				t.Errorf("expected CreateInstance context at RunInstances boundary")
 			}
 			assertCapacityFenceRunInstancesBinding(t, input, permit)
-			return capacityFenceRunInstancesOutput("i-valid"), nil
+			out := capacityFenceRunInstancesOutput("i-valid")
+			out.Instances[0].Tags = []awstypes.Tag{
+				{Key: aws.String(CapacityFenceClaimBindingTagKey), Value: aws.String(permit.ClaimBindingDigest)},
+				{Key: aws.String(ordinaryTagKey), Value: aws.String(ordinaryTagValue)},
+			}
+			return out, nil
 		},
 	)
 	ec2Mock.EXPECT().DescribeNetworkInterfaces(context.TODO(), gomock.Any()).Return(
-		&awsec2.DescribeNetworkInterfacesOutput{}, nil,
+		&awsec2.DescribeNetworkInterfacesOutput{NetworkInterfaces: []awstypes.NetworkInterface{{
+			NetworkInterfaceId: aws.String("eni-valid"),
+		}}}, nil,
 	)
+	ec2Mock.EXPECT().CreateTags(context.TODO(), gomock.Eq(&awsec2.CreateTagsInput{
+		Resources: []string{"eni-valid"},
+		Tags: []awstypes.Tag{{
+			Key:   aws.String(ordinaryTagKey),
+			Value: aws.String(ordinaryTagValue),
+		}},
+	})).Return(&awsec2.CreateTagsOutput{}, nil)
 
 	instance, err := service.CreateInstance(ctx, machineScope, []byte("userdata"), "")
 	if err != nil {
@@ -185,6 +201,12 @@ func TestCapacityFenceValidPermitPropagatesIdentitySetsTokenAndRecordsReceipt(t 
 	}
 	if instance.ID != "i-valid" {
 		t.Fatalf("expected i-valid, got %q", instance.ID)
+	}
+	if got := instance.Tags[CapacityFenceClaimBindingTagKey]; got != permit.ClaimBindingDigest {
+		t.Fatalf("returned instance claim-binding tag = %q, want %q", got, permit.ClaimBindingDigest)
+	}
+	if got := instance.Tags[ordinaryTagKey]; got != ordinaryTagValue {
+		t.Fatalf("returned instance ordinary tag = %q, want %q", got, ordinaryTagValue)
 	}
 	receipt := authorizer.ReceiptForClaim("claim/permit-valid")
 	if receipt == nil {
