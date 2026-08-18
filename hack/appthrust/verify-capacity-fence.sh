@@ -32,18 +32,18 @@ workspace="$(mktemp -d)"
 trap 'rm -rf "${workspace}"' EXIT
 (
   cd "${workspace}"
-  GOTOOLCHAIN=local go work init "${capa_root}" "${platform_source}" "${model_source}"
+  go work init "${capa_root}" "${platform_source}" "${model_source}"
 )
 go_work="${workspace}/go.work"
 
 (
   cd "${platform_source}"
-  GOTOOLCHAIN=local GOWORK="${go_work}" go test ./pkg/capacityfence
+  GOWORK="${go_work}" go test ./pkg/capacityfence
 )
 (
   cd "${capa_root}"
-  GOTOOLCHAIN=local GOWORK="${go_work}" go test -vet=off ./pkg/capacityfenceadapter ./pkg/cloud/services/ec2
-  GOTOOLCHAIN=local GOWORK="${go_work}" go build -o "${workspace}/manager" .
-  GOTOOLCHAIN=local go tool nm "${workspace}/manager" |
+  GOWORK="${go_work}" go test -vet=off ./pkg/capacityfenceadapter ./pkg/cloud/services/ec2
+  GOWORK="${go_work}" go build -o "${workspace}/manager" .
+  go tool nm "${workspace}/manager" |
     grep -Fq 'sigs.k8s.io/cluster-api-provider-aws/v2/pkg/capacityfenceadapter'
 )
