@@ -368,10 +368,12 @@ func (s *Service) CreateInstance(ctx context.Context, scope *scope.MachineScope,
 
 	// Once all the network interfaces attached to the specific instance are found, the similar tags of instance are created for network interfaces too
 	if len(networkInterfaces) > 0 {
+		eniTags := tagsWithoutCapacityFenceClaimBinding(out.Tags)
+
 		s.scope.Debug("Attempting to create tags from resource", "resource-id", out.ID)
 		for _, networkInterface := range networkInterfaces {
 			// Create/Update tags in AWS.
-			if err := s.UpdateResourceTags(networkInterface.NetworkInterfaceId, out.Tags, nil); err != nil {
+			if err := s.UpdateResourceTags(networkInterface.NetworkInterfaceId, eniTags, nil); err != nil {
 				return nil, errors.Wrapf(err, "failed to create tags for resource %q: ", *networkInterface.NetworkInterfaceId)
 			}
 		}
@@ -379,6 +381,20 @@ func (s *Service) CreateInstance(ctx context.Context, scope *scope.MachineScope,
 
 	record.Eventf(scope.AWSMachine, "SuccessfulCreate", "Created new %s instance with id %q", scope.Role(), out.ID)
 	return out, nil
+}
+
+func tagsWithoutCapacityFenceClaimBinding(tags map[string]string) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	filteredTags := make(map[string]string, len(tags))
+	for key, value := range tags {
+		if key != CapacityFenceClaimBindingTagKey {
+			filteredTags[key] = value
+		}
+	}
+	return filteredTags
 }
 
 // findSubnet attempts to retrieve a subnet ID in the following order:
