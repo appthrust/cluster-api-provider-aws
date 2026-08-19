@@ -23080,8 +23080,8 @@ spec:
         env:
         - name: AWS_SHARED_CREDENTIALS_FILE
           value: /home/.aws/credentials
-        image: ghcr.io/appthrust/platform/cluster-api-provider-aws@sha256:d65485a6d2932ceb5af3ef6a89288cf270174eb491e4a8ac712ef6645a34861d
-        imagePullPolicy: IfNotPresent
+        image: ghcr.io/appthrust/platform/cluster-api-provider-aws@sha256:ee045772f7df8b6fb402876b84f03686baf98f1b06e71887f5c2f67bc2c9ad32
+        imagePullPolicy: Always
         livenessProbe:
           failureThreshold: 3
           httpGet:

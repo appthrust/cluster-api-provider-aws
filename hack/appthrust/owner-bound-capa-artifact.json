@@ -1,0 +1,91 @@
+{
+  "adapter": {
+    "caller": {
+      "groups": [
+        "system:serviceaccounts",
+        "system:serviceaccounts:capa-system",
+        "system:authenticated"
+      ],
+      "username": "system:serviceaccount:capa-system:capa-controller-manager"
+    },
+    "capacityFenceImport": "github.com/appthrust/platform/pkg/capacityfence",
+    "selector": {
+      "label": "cluster.x-k8s.io/watch-filter",
+      "source": "charts/capa-capacity-gate/values.yaml#watchFilter.value"
+    }
+  },
+  "build": {
+    "builderImage": {
+      "digest": "sha256:0d1d3a794be25f809dd2cb3160d8c73276c4056a9f8242a138e908ddeee7b6b6",
+      "repository": "docker.io/library/golang:1.26.6"
+    },
+    "runtimeImage": {
+      "digest": "sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6",
+      "repository": "gcr.io/distroless/static:nonroot"
+    }
+  },
+  "downstream": {
+    "commit": "73a1307129c64625ad9dffaa3bc723d11f203e76",
+    "patchDigest": "sha256:679d55ecea1cab5a5fcf9e817c4b66c863a3a16ba3ef7d4ac93e836331306b14",
+    "repository": "github.com/appthrust/cluster-api-provider-aws",
+    "sourceDigest": "sha256:24a778494a0231f5f7e651bcac120658f1c010f841cfec94b31b904a013d4fda",
+    "treeDigest": "sha256:46284db9464982e73ba058065e105aa0c468e318e0ccd8688ff617f84624a81a"
+  },
+  "generated": {
+    "crdsDigest": "sha256:98f5991c9f3279691fba43d62f983ab8d715fe0d6f5cface36b86c2090266497",
+    "deploymentDigest": "sha256:7084a833bbfc055834bc98fd104562ed7abad6fe4f07e8ecaffe71c4a79d9aaf",
+    "providerManifestDigest": "sha256:4f7589fbf24e9fd59e27d2fdbc3d58041eb7f53820908a3cd6c6a4db85f65edc",
+    "rbacDigest": "sha256:f3fd71f51341bc47324ffee96599484842596ac7310bdc8c8ea359e1c0d01379",
+    "serviceAccountDigest": "sha256:9d1de3d10e7f3473fea3bcdd1680afc9a66213350646312dbf0d1810cefc1187"
+  },
+  "image": {
+    "digest": "sha256:ee045772f7df8b6fb402876b84f03686baf98f1b06e71887f5c2f67bc2c9ad32",
+    "platform": "linux/amd64",
+    "repository": "ghcr.io/appthrust/platform/cluster-api-provider-aws"
+  },
+  "ownerBinding": {
+    "capa": {
+      "serviceAccount": {
+        "groups": [
+          "system:serviceaccounts",
+          "system:serviceaccounts:capa-system",
+          "system:authenticated"
+        ],
+        "username": "system:serviceaccount:capa-system:capa-controller-manager"
+      }
+    },
+    "platform": {
+      "component": "cluster-api-provider-aws",
+      "materializer": "github.com/appthrust/platform/pkg/clusterinventory/packagemanifest",
+      "permitAuthority": "github.com/appthrust/platform/pkg/capacityfence",
+      "watchFilter": {
+        "label": "cluster.x-k8s.io/watch-filter",
+        "source": "charts/capa-capacity-gate/values.yaml#watchFilter.value"
+      }
+    }
+  },
+  "platform": {
+    "buildWorkspaceDigest": "sha256:c161881457908ae6f4deb19db50b2b573472164e061f29263293b120d633e970",
+    "capacityFenceRevision": "cfa89d1fc9325f4c1f51f34bd11dd94cfd59b744",
+    "modelSubtreeDigest": "sha256:988056ae555d9b7a7c907b75ce51428cda63207601c791314e99aad360324f3a"
+  },
+  "publication": {
+    "anonymousPullVerified": true,
+    "digest": "sha256:ee045772f7df8b6fb402876b84f03686baf98f1b06e71887f5c2f67bc2c9ad32",
+    "repository": "ghcr.io/appthrust/platform/cluster-api-provider-aws",
+    "visibility": "public"
+  },
+  "schemaVersion": "appthrust-owner-bound-capa-artifact/v1",
+  "upstream": {
+    "commit": "a84670fca02690c9e644fadcbbbf967a6e6f89d6",
+    "repository": "https://github.com/kubernetes-sigs/cluster-api-provider-aws.git",
+    "sourceDigest": "sha256:16ef210f430f295e035a2438d635bf19f0e00a437e78f34ce9679bdf12f4ef71",
+    "tag": "v2.13.0",
+    "tagObject": "9d3c4c0c07e739cd0a0d616adf76f2a294ec91de"
+  },
+  "versions": {
+    "capa": "v2.13.0",
+    "capi": "v1.13.4"
+  },
+  "descriptorDigest": "sha256:05bf8b8fdbecffa99497e707278580cc20b8bd41ade585f4e909d05cb9191ec6"
+}
