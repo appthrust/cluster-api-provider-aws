@@ -24,8 +24,6 @@ jobs:
       UPSTREAM_TAG_OBJECT: 9d3c4c0c07e739cd0a0d616adf76f2a294ec91de
       UPSTREAM_COMMIT: a84670fca02690c9e644fadcbbbf967a6e6f89d6
       PLATFORM_SOURCE_REVISION: ${{ inputs.platform_source_revision }}
-      PLATFORM_SOURCE_DIR: ${{ runner.temp }}/platform-source
-      EVIDENCE_DIR: ${{ runner.temp }}/owner-bound-capa-evidence
 
     steps:
       - name: Require trusted CAPA publisher identity
@@ -42,6 +40,14 @@ jobs:
             echo "workflow identity is not the trusted owner-bound artifact workflow" >&2
             exit 65
           }
+      - name: Set runner paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'PLATFORM_SOURCE_DIR=%s\n' "${RUNNER_TEMP}/platform-source"
+            printf 'EVIDENCE_DIR=%s\n' "${RUNNER_TEMP}/owner-bound-capa-evidence"
+          } >>"${GITHUB_ENV}"
 
       - name: Check out downstream source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
