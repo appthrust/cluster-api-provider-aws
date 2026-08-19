@@ -227,6 +227,30 @@ func TestCapacityFenceValidPermitPropagatesIdentitySetsTokenAndRecordsReceipt(t 
 	}
 }
 
+func TestCapacityFenceReservedBindingTagIsNeverMutatedAfterCreate(t *testing.T) {
+	service, ec2Mock := newCapacityFenceRunService(t, unavailableCapacityFenceAuthorizer{})
+	resourceID := aws.String("i-owner-bound")
+
+	ec2Mock.EXPECT().CreateTags(context.TODO(), gomock.Eq(&awsec2.CreateTagsInput{
+		Resources: []string{aws.ToString(resourceID)},
+		Tags: []awstypes.Tag{{
+			Key:   aws.String("example.com/ordinary"),
+			Value: aws.String("ordinary-value"),
+		}},
+	})).Return(&awsec2.CreateTagsOutput{}, nil)
+	ec2Mock.EXPECT().DeleteTags(gomock.Any(), gomock.Any()).Times(0)
+
+	err := service.UpdateResourceTags(resourceID, map[string]string{
+		CapacityFenceClaimBindingTagKey: capacityFenceTestDefaultClaimBindingDigest,
+		"example.com/ordinary":          "ordinary-value",
+	}, map[string]string{
+		CapacityFenceClaimBindingTagKey: capacityFenceTestDefaultClaimBindingDigest,
+	})
+	if err != nil {
+		t.Fatalf("UpdateResourceTags() error = %v", err)
+	}
+}
+
 func TestCapacityFenceRejectsSpoofedReservedTag(t *testing.T) {
 	identity := capacityFenceTestIdentity("machine-0", "aws-machine-0")
 	permit := newCapacityFenceTestPermit(identity, "permit-spoof", "stable-spoof-token")

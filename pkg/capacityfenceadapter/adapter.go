@@ -61,6 +61,25 @@ func (a *Adapter) Claim(ctx context.Context, identity ec2.CapacityFenceIdentity)
 		return nil, err
 	}
 	target := targetFromIdentity(identity)
+	_, persisted, err := a.selector.ResolvePersistedClaim(ctx, target)
+	if err == nil {
+		token, deriveErr := platformv1alpha1.DeriveMachineProvisioningPermitEC2ClientTokenV1(
+			platformv1alpha1.MachineProvisioningPermitEC2ClientTokenInput{ClaimBindingDigest: persisted.ClaimBindingDigest},
+		)
+		if deriveErr != nil {
+			return nil, fmt.Errorf("%w: derive persisted EC2 client token: %v", capacityfence.ErrAuthorityInvalid, deriveErr)
+		}
+		tokenDigest, digestErr := platformv1alpha1.CalculateMachineProvisioningPermitClientTokenDigestV1(token)
+		if digestErr != nil || tokenDigest != persisted.ClientTokenDigest {
+			return nil, fmt.Errorf("%w: persisted EC2 client token digest does not match", capacityfence.ErrClaimIdentityMismatch)
+		}
+		return &ec2.CapacityFenceClaim{
+			ClaimID: persisted.ClaimID, ClaimBindingDigest: persisted.ClaimBindingDigest.Digest, ClientToken: token,
+		}, nil
+	}
+	if !errors.Is(err, capacityfence.ErrPermitSelectionNoMatch) {
+		return nil, err
+	}
 	request, err := a.selector.ResolveClaimRequest(ctx, target)
 	if err != nil {
 		return nil, err
@@ -70,9 +89,7 @@ func (a *Adapter) Claim(ctx context.Context, identity ec2.CapacityFenceIdentity)
 		return nil, err
 	}
 	return &ec2.CapacityFenceClaim{
-		ClaimID:            result.ClaimID,
-		ClaimBindingDigest: result.ClaimBindingDigest.Digest,
-		ClientToken:        result.ClientToken,
+		ClaimID: result.ClaimID, ClaimBindingDigest: result.ClaimBindingDigest.Digest, ClientToken: result.ClientToken,
 	}, nil
 }
 

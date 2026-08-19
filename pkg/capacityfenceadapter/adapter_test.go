@@ -19,6 +19,7 @@ package capacityfenceadapter
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -179,6 +180,26 @@ func TestCapacityFenceAdapterUsesCurrentPersistedAuthority(t *testing.T) {
 		}
 		if stored.Status.Claims[0].MachineRef.Generation != preBindIdentity.MachineGeneration || stored.Status.Claims[0].AWSMachineRef.Generation != preBindIdentity.AWSMachineGeneration {
 			t.Fatalf("persisted claim target = %#v, want pre-bind target %#v", stored.Status.Claims[0], preBindIdentity)
+		}
+	})
+	t.Run("claim recovers a gate-persisted pre-bind claim at current generations", func(t *testing.T) {
+		fixture := newCapacityFenceAdapterFixture(t)
+		adapter := NewAdapter(fixture.client, fixture.client)
+		claimed, err := adapter.Claim(t.Context(), fixture.identity)
+		if err != nil {
+			t.Fatalf("initial Claim() error = %v", err)
+		}
+		fixture.advanceTargetGenerations(t)
+
+		recovered, err := adapter.Claim(t.Context(), fixture.identity)
+		if err != nil {
+			t.Fatalf("Claim() from persisted pre-bind target error = %v", err)
+		}
+		if !reflect.DeepEqual(recovered, claimed) {
+			t.Fatalf("recovered claim = %#v, want %#v", recovered, claimed)
+		}
+		if stored := fixture.getPermit(t); len(stored.Status.Claims) != 1 {
+			t.Fatalf("stored claims = %#v, want one durable claim", stored.Status.Claims)
 		}
 	})
 	t.Run("deletion query reports only bound provider requests without receipts", func(t *testing.T) {

@@ -962,6 +962,8 @@ func (s *Service) UpdateInstanceSecurityGroups(instanceID string, ids []string) 
 // receiving to avoid calling AWS if we don't need to.
 func (s *Service) UpdateResourceTags(resourceID *string, create, remove map[string]string) error {
 	s.scope.Debug("Attempting to update tags on resource", "resource-id", aws.ToString(resourceID))
+	create = tagsWithoutCapacityFenceClaimBinding(create)
+	remove = tagsWithoutCapacityFenceClaimBinding(remove)
 
 	// If we have anything to create or update
 	if len(create) > 0 {
