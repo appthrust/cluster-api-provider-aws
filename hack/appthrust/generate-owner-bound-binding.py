@@ -12,8 +12,6 @@ from typing import Any
 
 GIT_OBJECT = re.compile(r"^[0-9a-f]{40}$")
 SHA256_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-ATTESTATION_IDENTITY = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
-NON_EMPTY = re.compile(r".*\S.*")
 EMPTY_SHA256_DIGEST = f"sha256:{'0' * 64}"
 EMPTY_FILE_SHA256_DIGEST = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
@@ -39,7 +37,6 @@ SERVICE_ACCOUNT_GROUPS = [
     "system:serviceaccounts:capa-system",
     "system:authenticated",
 ]
-SIGNATURE_ISSUER = "https://token.actions.githubusercontent.com"
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,13 +56,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rbac-digest", required=True)
     parser.add_argument("--service-account-digest", required=True)
     parser.add_argument("--deployment-digest", required=True)
-    parser.add_argument("--sbom-identity", required=True)
-    parser.add_argument("--sbom-digest", required=True)
-    parser.add_argument("--provenance-identity", required=True)
-    parser.add_argument("--provenance-digest", required=True)
-    parser.add_argument("--signature-identity", required=True)
-    parser.add_argument("--signature-issuer", required=True)
-    parser.add_argument("--signature-digest", required=True)
     parser.add_argument("--publication-visibility", required=True)
     parser.add_argument("--anonymous-pull-verified", required=True)
     return parser.parse_args()
@@ -98,26 +88,14 @@ def binding(args: argparse.Namespace) -> dict[str, Any]:
         "rbac_digest",
         "service_account_digest",
         "deployment_digest",
-        "sbom_digest",
-        "provenance_digest",
-        "signature_digest",
     ):
         require_digest(getattr(args, field), field.replace("_", " "))
-    for field in ("sbom_identity", "provenance_identity", "signature_identity"):
-        require_match(getattr(args, field), ATTESTATION_IDENTITY, field.replace("_", " "))
-    require_match(args.signature_issuer, NON_EMPTY, "signature issuer")
-    if args.signature_issuer != SIGNATURE_ISSUER:
-        raise ValueError("signature issuer is not the GitHub Actions OIDC issuer")
     if args.publication_visibility != "public":
         raise ValueError("publication visibility must be public")
     if args.anonymous_pull_verified != "true":
         raise ValueError("anonymous pull verification must be true")
 
 
-    image_reference = f"{IMAGE_REPOSITORY}@{args.image_digest}"
-    for field in ("sbom_identity", "provenance_identity", "signature_identity"):
-        if getattr(args, field) != image_reference:
-            raise ValueError(f"{field.replace('_', ' ')} must bind the exact image digest")
 
     return {
         "schemaVersion": SCHEMA_VERSION,
@@ -163,18 +141,6 @@ def binding(args: argparse.Namespace) -> dict[str, Any]:
             "platform": "linux/amd64",
             "repository": IMAGE_REPOSITORY,
             "digest": args.image_digest,
-        },
-        "attestations": {
-            "sbom": {"identity": args.sbom_identity, "digest": args.sbom_digest},
-            "provenance": {
-                "identity": args.provenance_identity,
-                "digest": args.provenance_digest,
-            },
-            "signature": {
-                "identity": args.signature_identity,
-                "issuer": args.signature_issuer,
-                "digest": args.signature_digest,
-            },
         },
         "generated": {
             "providerManifestDigest": args.provider_manifest_digest,

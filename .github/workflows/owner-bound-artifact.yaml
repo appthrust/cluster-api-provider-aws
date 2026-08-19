@@ -11,11 +11,10 @@ on:
 permissions:
   contents: read
   packages: write
-  id-token: write
 
 jobs:
   build-owner-bound-artifact:
-    name: Build and sign owner-bound CAPA image
+    name: Build owner-bound CAPA image
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -298,8 +297,6 @@ jobs:
             platform-source=${{ runner.temp }}/platform-source
           platforms: linux/amd64
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
-          provenance: mode=max,version=v1
-          sbom: generator=docker.io/docker/buildkit-syft-scanner:stable-1@sha256:79e7b013cbec16bbb436f312819a49a4a57752b2270c1a9332ae1a10fcc82a68
 
       - name: Read back immutable linux/amd64 image digest
         id: image
@@ -485,86 +482,8 @@ jobs:
             echo "deployment_digest=${deployment_digest}"
           } >>"${GITHUB_OUTPUT}"
 
-      - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-        with:
-          cosign-release: v2.5.3
 
-      - name: Capture and verify exact image evidence
-        id: evidence
-        shell: bash
-        env:
-          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
-        run: |
-          set -euo pipefail
-
-          sha256_file() {
-            local file="$1" label="$2" digest
-            [[ -f "${file}" && ! -L "${file}" && -s "${file}" ]] || {
-              echo "${label} is absent, indirect, or empty" >&2
-              exit 65
-            }
-            digest="sha256:$(sha256sum "${file}" | awk '{print $1}')"
-            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
-              echo "${label} has an invalid SHA-256 digest" >&2
-              exit 65
-            }
-            printf '%s\n' "${digest}"
-          }
-
-          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 65
-          image_reference="${REGISTRY_IMAGE}@${IMAGE_DIGEST}"
-          sbom="${EVIDENCE_DIR}/image.sbom.json"
-          provenance="${EVIDENCE_DIR}/image.provenance.jsonl"
-          signature_bundle="${EVIDENCE_DIR}/image.signature.bundle.json"
-          issuer="https://token.actions.githubusercontent.com"
-          certificate_identity="https://github.com/${GITHUB_WORKFLOW_REF}"
-
-          cosign download sbom "${image_reference}" >"${sbom}"
-          cosign download attestation --predicate-type https://slsa.dev/provenance/v1 "${image_reference}" >"${provenance}"
-          jq -e 'type == "object" or type == "array"' "${sbom}" >/dev/null || {
-            echo "SBOM evidence is not valid JSON" >&2
-            exit 65
-          }
-          jq -s -e --arg digest "${IMAGE_DIGEST#sha256:}" '
-            [
-              .[]
-              | (.payload | @base64d | fromjson) as $statement
-              | select(
-                  $statement.predicateType == "https://slsa.dev/provenance/v1" and
-                  ($statement.predicate | type == "object") and
-                  ($statement.subject | type == "array") and
-                  ([ $statement.subject[] | select(.digest.sha256 == $digest) ] | length == 1)
-                )
-            ]
-            | length == 1
-          ' "${provenance}" >/dev/null || {
-            echo "provenance JSONL must contain exactly one SLSA v1 predicate for the exact image digest" >&2
-            exit 65
-          }
-          sbom_digest="$(sha256_file "${sbom}" "SBOM evidence")"
-          provenance_digest="$(sha256_file "${provenance}" "provenance evidence")"
-
-          cosign sign --yes --bundle "${signature_bundle}" "${image_reference}"
-          cosign verify \
-            --bundle "${signature_bundle}" \
-            --certificate-identity "${certificate_identity}" \
-            --certificate-oidc-issuer "${issuer}" \
-            "${image_reference}" >/dev/null
-          signature_digest="$(sha256_file "${signature_bundle}" "signature bundle")"
-
-          {
-            echo "sbom_identity=${image_reference}"
-            echo "sbom_digest=${sbom_digest}"
-            echo "provenance_identity=${image_reference}"
-            echo "provenance_digest=${provenance_digest}"
-            echo "signature_identity=${image_reference}"
-            echo "signature_issuer=${issuer}"
-            echo "signature_digest=${signature_digest}"
-          } >>"${GITHUB_OUTPUT}"
-
-
-      - name: Verify anonymous public pull for the signed image
+      - name: Verify anonymous public pull
         id: publication
         shell: bash
         env:
@@ -624,13 +543,6 @@ jobs:
           RBAC_DIGEST: ${{ steps.provider_manifest.outputs.rbac_digest }}
           SERVICE_ACCOUNT_DIGEST: ${{ steps.provider_manifest.outputs.service_account_digest }}
           DEPLOYMENT_DIGEST: ${{ steps.provider_manifest.outputs.deployment_digest }}
-          SBOM_IDENTITY: ${{ steps.evidence.outputs.sbom_identity }}
-          SBOM_DIGEST: ${{ steps.evidence.outputs.sbom_digest }}
-          PROVENANCE_IDENTITY: ${{ steps.evidence.outputs.provenance_identity }}
-          PROVENANCE_DIGEST: ${{ steps.evidence.outputs.provenance_digest }}
-          SIGNATURE_IDENTITY: ${{ steps.evidence.outputs.signature_identity }}
-          SIGNATURE_ISSUER: ${{ steps.evidence.outputs.signature_issuer }}
-          SIGNATURE_DIGEST: ${{ steps.evidence.outputs.signature_digest }}
           PUBLICATION_VISIBILITY: ${{ steps.publication.outputs.visibility }}
           ANONYMOUS_PULL_VERIFIED: ${{ steps.publication.outputs.anonymous_pull_verified }}
         run: |
@@ -653,43 +565,11 @@ jobs:
             --rbac-digest "${RBAC_DIGEST}" \
             --service-account-digest "${SERVICE_ACCOUNT_DIGEST}" \
             --deployment-digest "${DEPLOYMENT_DIGEST}" \
-            --sbom-identity "${SBOM_IDENTITY}" \
-            --sbom-digest "${SBOM_DIGEST}" \
-            --provenance-identity "${PROVENANCE_IDENTITY}" \
-            --provenance-digest "${PROVENANCE_DIGEST}" \
-            --signature-identity "${SIGNATURE_IDENTITY}" \
-            --signature-issuer "${SIGNATURE_ISSUER}" \
-            --signature-digest "${SIGNATURE_DIGEST}" \
             --publication-visibility "${PUBLICATION_VISIBILITY}" \
             --anonymous-pull-verified "${ANONYMOUS_PULL_VERIFIED}"
           bun "${PLATFORM_SOURCE_DIR}/hack/capa-artifacts/seal-owner-bound-capa-artifact.ts" "${binding}" "${descriptor}"
           [[ -s "${binding}" && -s "${descriptor}" && ! -L "${binding}" && ! -L "${descriptor}" ]] || {
             echo "binding or sealed descriptor was not created as a regular non-empty file" >&2
-            exit 65
-          }
-      - name: Sign and verify sealed descriptor
-        shell: bash
-        run: |
-          set -euo pipefail
-          expected_workflow_ref="appthrust/cluster-api-provider-aws/.github/workflows/owner-bound-artifact.yaml@${GITHUB_REF}"
-          [[ "${GITHUB_WORKFLOW_REF}" == "${expected_workflow_ref}" ]] || {
-            echo "workflow identity changed before descriptor signing" >&2
-            exit 65
-          }
-          descriptor="${EVIDENCE_DIR}/owner-bound-capa-artifact.json"
-          descriptor_signature_bundle="${EVIDENCE_DIR}/owner-bound-capa-artifact.signature.bundle.json"
-          [[ -f "${descriptor}" && ! -L "${descriptor}" && -s "${descriptor}" && ! -e "${descriptor_signature_bundle}" ]] || {
-            echo "sealed descriptor or descriptor signature bundle path is invalid" >&2
-            exit 65
-          }
-          cosign sign-blob --yes --bundle "${descriptor_signature_bundle}" "${descriptor}"
-          cosign verify-blob \
-            --bundle "${descriptor_signature_bundle}" \
-            --certificate-identity "https://github.com/${GITHUB_WORKFLOW_REF}" \
-            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-            "${descriptor}" >/dev/null
-          [[ -f "${descriptor_signature_bundle}" && ! -L "${descriptor_signature_bundle}" && -s "${descriptor_signature_bundle}" ]] || {
-            echo "descriptor signature bundle was not created as a regular non-empty file" >&2
             exit 65
           }
       - name: Recheck source identities after full evidence path
@@ -761,10 +641,5 @@ jobs:
             ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.rbac.yaml
             ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.service-account.yaml
             ${{ runner.temp }}/owner-bound-capa-evidence/infrastructure-components.deployment.yaml
-            ${{ runner.temp }}/owner-bound-capa-evidence/image.sbom.json
-            ${{ runner.temp }}/owner-bound-capa-evidence/image.provenance.jsonl
-            ${{ runner.temp }}/owner-bound-capa-evidence/image.signature.bundle.json
-            ${{ runner.temp }}/owner-bound-capa-evidence/image.publication.json
-            ${{ runner.temp }}/owner-bound-capa-evidence/owner-bound-capa-artifact.signature.bundle.json
           if-no-files-found: error
           retention-days: 90
