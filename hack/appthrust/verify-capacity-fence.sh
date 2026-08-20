@@ -9,32 +9,14 @@ usage() {
 [[ $# -eq 1 ]] || usage
 
 capa_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
-platform_source="$(cd "$1" && pwd -P)"
-model_source="${platform_source}/model"
-
-[[ -f "${capa_root}/go.mod" && \
-  -f "${platform_source}/go.mod" && \
-  -d "${platform_source}/pkg/capacityfence" && \
-  -f "${model_source}/go.mod" ]] || {
-  echo "exact Platform source lacks the owner-bound capacity-fence layout" >&2
-  exit 65
-}
-
-for source in "${capa_root}" "${platform_source}"; do
-  git -C "${source}" rev-parse --verify HEAD^{commit} >/dev/null
-  [[ -z "$(git -C "${source}" status --porcelain=v1 --untracked-files=all)" ]] || {
-    echo "owner-bound source is not clean: ${source}" >&2
-    exit 65
-  }
-done
+platform_source="$1"
 
 workspace="$(mktemp -d)"
 trap 'rm -rf "${workspace}"' EXIT
-(
-  cd "${workspace}"
-  go work init "${capa_root}" "${platform_source}" "${model_source}"
-)
 go_work="${workspace}/go.work"
+"${capa_root}/hack/appthrust/prepare-capacity-fence-workspace.sh" \
+  "${platform_source}" \
+  "${go_work}"
 
 (
   cd "${platform_source}"

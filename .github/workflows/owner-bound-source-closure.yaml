@@ -1,21 +1,16 @@
-name: PR golangci-lint
+name: Owner-bound source closure
 
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
 
-# Remove all permissions from GITHUB_TOKEN except metadata.
 permissions: {}
 
 jobs:
-  golangci:
-    name: lint
+  owner-bound-source-closure:
+    name: owner-bound-source-closure
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        working-directory:
-          - ""
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v4.2.2
         with:
@@ -29,18 +24,17 @@ jobs:
         run: |
           set -euo pipefail
           [[ "${HEAD_REPOSITORY}" == "${GITHUB_REPOSITORY}" ]] || {
-            echo "owner-bound CAPA lint requires a trusted same-repository branch" >&2
+            echo "owner-bound source closure requires a trusted same-repository branch" >&2
             exit 65
           }
           [[ -n "${PLATFORM_READ_TOKEN}" ]] || {
-            echo "owner-bound CAPA lint requires the private Platform read credential" >&2
+            echo "owner-bound source closure requires the private Platform read credential" >&2
             exit 65
           }
           platform_revision="$(./hack/appthrust/read-platform-source-revision.sh)"
           {
             echo "PLATFORM_SOURCE_REVISION=${platform_revision}"
             echo "PLATFORM_SOURCE_DIR=${RUNNER_TEMP}/platform-source"
-            echo "OWNER_BOUND_GO_WORK=${RUNNER_TEMP}/owner-bound-source/go.work"
           } >>"${GITHUB_ENV}"
       - name: Check out exact private Platform source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v4.2.2
@@ -60,18 +54,6 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # tag=v7.0.0
         with:
           go-version-file: ${{ env.PLATFORM_SOURCE_DIR }}/go.mod
-      - name: Prepare exact owner-bound workspace
+      - name: Verify exact owner-bound source closure
         shell: bash
-        run: |
-          set -euo pipefail
-          ./hack/appthrust/prepare-capacity-fence-workspace.sh \
-            "${PLATFORM_SOURCE_DIR}" \
-            "${OWNER_BOUND_GO_WORK}"
-          echo "GOWORK=${OWNER_BOUND_GO_WORK}" >>"${GITHUB_ENV}"
-      - name: golangci-lint
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # tag=v9.3.0
-        with:
-          version: v2.12.2
-          working-directory: ${{matrix.working-directory}}
-      - name: Lint API
-        run: make lint-api
+        run: ./hack/appthrust/verify-capacity-fence.sh "${PLATFORM_SOURCE_DIR}"

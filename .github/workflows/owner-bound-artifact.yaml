@@ -63,6 +63,11 @@ jobs:
             echo "platform_source_revision must be a lowercase 40-hex commit ID" >&2
             exit 64
           }
+          tracked_revision="$(./hack/appthrust/read-platform-source-revision.sh)"
+          [[ "${PLATFORM_SOURCE_REVISION}" == "${tracked_revision}" ]] || {
+            echo "platform_source_revision must equal the tracked source pin" >&2
+            exit 65
+          }
 
       - name: Check out exact Platform source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
