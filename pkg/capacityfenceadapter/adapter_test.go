@@ -1,3 +1,5 @@
+//go:build appthrust_owner_bound
+
 /*
 Copyright 2026 The Kubernetes Authors.
 
@@ -373,7 +375,7 @@ func newCapacityFenceAdapterFixture(t *testing.T) *capacityFenceAdapterFixture {
 			ClusterRef: platformv1alpha1.LocalObjectReference{Name: permit.Spec.AppThrustClusterRef.Name},
 			Type:       platformv1alpha1.ClusterOperationTypeCreate,
 			MachineProvisioningAuthority: &platformv1alpha1.ClusterOperationMachineProvisioningAuthority{
-				PermitName:            common.DnsLabelName(permit.Name),
+				PermitName:            permit.Name,
 				TopologyOwnerRef:      permit.Spec.TopologyOwnerRef,
 				AWSMachineTemplateRef: permit.Spec.AWSMachineTemplateRef,
 				Action:                permit.Spec.Action,
@@ -464,12 +466,12 @@ func (f *capacityFenceAdapterFixture) createAmbiguousPermit(t *testing.T) {
 
 	cluster := &platformv1alpha1.AppThrustCluster{}
 	if err := f.client.Get(t.Context(), client.ObjectKey{
-		Namespace: string(f.permit.Spec.AppThrustClusterRef.Namespace),
-		Name:      string(f.permit.Spec.AppThrustClusterRef.Name),
+		Namespace: f.permit.Spec.AppThrustClusterRef.Namespace,
+		Name:      f.permit.Spec.AppThrustClusterRef.Name,
 	}, cluster); err != nil {
 		t.Fatalf("get original AppThrustCluster for ambiguous permit: %v", err)
 	}
-	cluster.Name, cluster.UID, cluster.ResourceVersion = string(second.Spec.AppThrustClusterRef.Name), types.UID(second.Spec.AppThrustClusterRef.UID), ""
+	cluster.Name, cluster.UID, cluster.ResourceVersion = second.Spec.AppThrustClusterRef.Name, types.UID(second.Spec.AppThrustClusterRef.UID), ""
 	if cluster.Status.Realization == nil {
 		t.Fatal("original AppThrustCluster has no realization")
 	}
@@ -477,12 +479,12 @@ func (f *capacityFenceAdapterFixture) createAmbiguousPermit(t *testing.T) {
 
 	reservation := &platformv1alpha1.CapacityReservation{}
 	if err := f.client.Get(t.Context(), client.ObjectKey{
-		Namespace: string(f.permit.Spec.CapacityReservationRef.Namespace),
-		Name:      string(f.permit.Spec.CapacityReservationRef.Name),
+		Namespace: f.permit.Spec.CapacityReservationRef.Namespace,
+		Name:      f.permit.Spec.CapacityReservationRef.Name,
 	}, reservation); err != nil {
 		t.Fatalf("get original CapacityReservation for ambiguous permit: %v", err)
 	}
-	reservation.Name, reservation.UID, reservation.ResourceVersion = string(second.Spec.CapacityReservationRef.Name), types.UID(second.Spec.CapacityReservationRef.UID), ""
+	reservation.Name, reservation.UID, reservation.ResourceVersion = second.Spec.CapacityReservationRef.Name, types.UID(second.Spec.CapacityReservationRef.UID), ""
 	reservation.Spec.ClusterRef.Name = second.Spec.AppThrustClusterRef.Name
 	if reservation.Spec.OperationRef == nil {
 		t.Fatal("original CapacityReservation has no operationRef")
@@ -491,17 +493,17 @@ func (f *capacityFenceAdapterFixture) createAmbiguousPermit(t *testing.T) {
 
 	operation := &platformv1alpha1.ClusterOperation{}
 	if err := f.client.Get(t.Context(), client.ObjectKey{
-		Namespace: string(f.permit.Spec.ClusterOperationRef.Namespace),
-		Name:      string(f.permit.Spec.ClusterOperationRef.Name),
+		Namespace: f.permit.Spec.ClusterOperationRef.Namespace,
+		Name:      f.permit.Spec.ClusterOperationRef.Name,
 	}, operation); err != nil {
 		t.Fatalf("get original ClusterOperation for ambiguous permit: %v", err)
 	}
-	operation.Name, operation.UID, operation.ResourceVersion = string(second.Spec.ClusterOperationRef.Name), types.UID(second.Spec.ClusterOperationRef.UID), ""
+	operation.Name, operation.UID, operation.ResourceVersion = second.Spec.ClusterOperationRef.Name, types.UID(second.Spec.ClusterOperationRef.UID), ""
 	operation.Spec.ClusterRef.Name = second.Spec.AppThrustClusterRef.Name
 	if operation.Spec.MachineProvisioningAuthority == nil {
 		t.Fatal("original ClusterOperation has no machineProvisioningAuthority")
 	}
-	operation.Spec.MachineProvisioningAuthority.PermitName = common.DnsLabelName(second.Name)
+	operation.Spec.MachineProvisioningAuthority.PermitName = second.Name
 
 	for _, object := range []client.Object{cluster, reservation, operation, second} {
 		if err := f.client.Create(t.Context(), object); err != nil {
@@ -525,11 +527,11 @@ func (f *capacityFenceAdapterFixture) assertNoClaims(t *testing.T) {
 }
 
 func capacityFenceExactRef(group, kind, namespace, name string, uid types.UID, generation int64) common.ExactTypedNamespacedObjectReference {
-	return common.ExactTypedNamespacedObjectReference{Group: group, Kind: kind, Namespace: common.DnsLabelName(namespace), Name: common.DnsLabelName(name), UID: common.BoundedUID(uid), Generation: generation}
+	return common.ExactTypedNamespacedObjectReference{Group: group, Kind: kind, Namespace: namespace, Name: name, UID: common.BoundedUID(uid), Generation: generation}
 }
 
 func capacityFenceExactClusterRef(group, kind, name string, uid types.UID, generation int64) common.ExactTypedObjectReference {
-	return common.ExactTypedObjectReference{Group: group, Kind: kind, Name: common.DnsLabelName(name), UID: common.BoundedUID(uid), Generation: generation}
+	return common.ExactTypedObjectReference{Group: group, Kind: kind, Name: name, UID: common.BoundedUID(uid), Generation: generation}
 }
 
 func capacityFenceDigest(hexDigit string) common.VersionedCanonicalSHA256Digest {

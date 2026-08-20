@@ -1,3 +1,5 @@
+//go:build appthrust_owner_bound
+
 /*
 Copyright 2026 The Kubernetes Authors.
 
@@ -56,6 +58,7 @@ func NewAdapter(writer client.Client, apiReader client.Reader) *Adapter {
 	}
 }
 
+// Claim resolves or atomically consumes the exact provider mutation authority.
 func (a *Adapter) Claim(ctx context.Context, identity ec2.CapacityFenceIdentity) (*ec2.CapacityFenceClaim, error) {
 	if err := a.validate(); err != nil {
 		return nil, err
@@ -122,6 +125,7 @@ func (a *Adapter) BindProviderRequest(ctx context.Context, identity ec2.Capacity
 	})
 }
 
+// Record persists one immutable provider receipt for the exact claim.
 func (a *Adapter) Record(ctx context.Context, receipt ec2.CapacityFenceMutationReceipt) error {
 	if err := a.validate(); err != nil {
 		return err
@@ -141,6 +145,7 @@ func (a *Adapter) Record(ctx context.Context, receipt ec2.CapacityFenceMutationR
 	})
 }
 
+// EnsureReceipt recovers and verifies a provider receipt from instance evidence.
 func (a *Adapter) EnsureReceipt(ctx context.Context, identity ec2.CapacityFenceIdentity, instance infrav1.Instance) error {
 	if err := a.validate(); err != nil {
 		return err
@@ -189,14 +194,14 @@ func targetFromIdentity(identity ec2.CapacityFenceIdentity) capacityfence.Target
 	return capacityfence.TargetIdentity{
 		MachineRef: common.ExactTypedNamespacedObjectReference{
 			Group: "cluster.x-k8s.io", Kind: "Machine",
-			Namespace: common.DnsLabelName(identity.MachineNamespace),
-			Name:      common.DnsLabelName(identity.MachineName),
+			Namespace: identity.MachineNamespace,
+			Name:      identity.MachineName,
 			UID:       common.BoundedUID(identity.MachineUID), Generation: identity.MachineGeneration,
 		},
 		AWSMachineRef: common.ExactTypedNamespacedObjectReference{
 			Group: "infrastructure.cluster.x-k8s.io", Kind: "AWSMachine",
-			Namespace: common.DnsLabelName(identity.AWSMachineNamespace),
-			Name:      common.DnsLabelName(identity.AWSMachineName),
+			Namespace: identity.AWSMachineNamespace,
+			Name:      identity.AWSMachineName,
 			UID:       common.BoundedUID(identity.AWSMachineUID), Generation: identity.AWSMachineGeneration,
 		},
 	}

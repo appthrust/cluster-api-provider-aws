@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOTOOLCHAIN=local GOWORK=/workspace/build/go.work \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -buildvcs=false -ldflags='-s -w -extldflags "-static"' \
+    go build -tags=appthrust_owner_bound -trimpath -buildvcs=false -ldflags='-s -w -extldflags "-static"' \
       -o /workspace/out/manager .
 
 FROM ${RUNTIME_IMAGE}

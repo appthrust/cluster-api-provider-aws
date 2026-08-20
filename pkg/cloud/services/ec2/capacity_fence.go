@@ -156,7 +156,9 @@ func CapacityFenceProviderRequestDigest(input *awsec2.RunInstancesInput) (string
 	if input == nil {
 		return "", fmt.Errorf("RunInstances input is nil")
 	}
-	raw, err := json.Marshal(input)
+	withoutToken := *input
+	withoutToken.ClientToken = nil
+	raw, err := json.Marshal(&withoutToken) // #nosec G117 -- ClientToken is cleared before serialization.
 	if err != nil {
 		return "", fmt.Errorf("marshal finalized RunInstances input: %w", err)
 	}
@@ -164,9 +166,11 @@ func CapacityFenceProviderRequestDigest(input *awsec2.RunInstancesInput) (string
 	if err := json.Unmarshal(raw, &canonical); err != nil {
 		return "", fmt.Errorf("copy finalized RunInstances input: %w", err)
 	}
+	// The copy was created from token-free bytes; keep this explicit before
+	// serializing the canonical request for its digest.
 	canonical.ClientToken = nil
 	canonicalizeCapacityFenceRunInstancesInput(&canonical)
-	raw, err = json.Marshal(&canonical)
+	raw, err = json.Marshal(&canonical) // #nosec G117 -- ClientToken is cleared before serialization.
 	if err != nil {
 		return "", fmt.Errorf("marshal canonical RunInstances input: %w", err)
 	}

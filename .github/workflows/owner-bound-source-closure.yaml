@@ -35,6 +35,7 @@ jobs:
           {
             echo "PLATFORM_SOURCE_REVISION=${platform_revision}"
             echo "PLATFORM_SOURCE_DIR=${RUNNER_TEMP}/platform-source"
+            echo "OWNER_BOUND_GO_WORK=${RUNNER_TEMP}/owner-bound-source/go.work"
           } >>"${GITHUB_ENV}"
       - name: Check out exact private Platform source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v4.2.2
@@ -57,3 +58,20 @@ jobs:
       - name: Verify exact owner-bound source closure
         shell: bash
         run: ./hack/appthrust/verify-capacity-fence.sh "${PLATFORM_SOURCE_DIR}"
+      - name: Prepare exact owner-bound lint workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./hack/appthrust/prepare-capacity-fence-workspace.sh \
+            "${PLATFORM_SOURCE_DIR}" \
+            "${OWNER_BOUND_GO_WORK}"
+          echo "GOWORK=${OWNER_BOUND_GO_WORK}" >>"${GITHUB_ENV}"
+      # Stock CAPA lint owns govet under the upstream Go toolchain. The exact
+      # owner-bound workspace uses Platform Go and scopes the remaining linters
+      # to the private extension packages to avoid importing unrelated upstream
+      # Go-version diagnostics into this derivative boundary.
+      - name: Lint owner-bound source closure
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # tag=v9.3.0
+        with:
+          version: v2.12.2
+          args: --disable=govet --build-tags=appthrust_owner_bound ./pkg/capacityfenceadapter/... ./pkg/capacityfenceintegration/... ./pkg/cloud/services/ec2/...

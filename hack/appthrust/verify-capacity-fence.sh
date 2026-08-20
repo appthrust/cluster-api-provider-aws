@@ -24,8 +24,9 @@ go_work="${workspace}/go.work"
 )
 (
   cd "${capa_root}"
-  GOWORK="${go_work}" go test -vet=off ./pkg/capacityfenceadapter ./pkg/cloud/services/ec2
-  GOWORK="${go_work}" go build -o "${workspace}/manager" .
+  GOWORK="${go_work}" go test -tags=appthrust_owner_bound -vet=off ./pkg/capacityfenceadapter ./pkg/capacityfenceintegration ./pkg/cloud/services/ec2
+  GOWORK="${go_work}" go vet -tags=appthrust_owner_bound ./pkg/capacityfenceadapter ./pkg/capacityfenceintegration
+  GOWORK="${go_work}" go build -tags=appthrust_owner_bound -o "${workspace}/manager" .
   go tool nm "${workspace}/manager" |
     awk 'index($0, "sigs.k8s.io/cluster-api-provider-aws/v2/pkg/capacityfenceadapter") { found = 1 } END { exit found ? 0 : 1 }'
 )

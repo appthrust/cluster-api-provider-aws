@@ -1,3 +1,5 @@
+//go:build appthrust_owner_bound
+
 /*
 Copyright 2026 The Kubernetes Authors.
 
@@ -99,7 +101,6 @@ func TestCapacityFenceAdapterGatesRunInstances(t *testing.T) {
 			},
 		}
 		for _, testCase := range testCases {
-			testCase := testCase
 			t.Run(testCase.name, func(t *testing.T) {
 				fixture := newCapacityFenceAdapterFixture(t)
 				authorizer, identity := testCase.prepare(t, fixture)

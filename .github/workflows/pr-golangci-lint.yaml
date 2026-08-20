@@ -19,55 +19,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v4.2.2
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - name: Require trusted source and load Platform pin
-        shell: bash
-        env:
-          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          PLATFORM_READ_TOKEN: ${{ secrets.APPTHRUST_PLATFORM_READ_TOKEN }}
-        run: |
-          set -euo pipefail
-          [[ "${HEAD_REPOSITORY}" == "${GITHUB_REPOSITORY}" ]] || {
-            echo "owner-bound CAPA lint requires a trusted same-repository branch" >&2
-            exit 65
-          }
-          [[ -n "${PLATFORM_READ_TOKEN}" ]] || {
-            echo "owner-bound CAPA lint requires the private Platform read credential" >&2
-            exit 65
-          }
-          platform_revision="$(./hack/appthrust/read-platform-source-revision.sh)"
-          {
-            echo "PLATFORM_SOURCE_REVISION=${platform_revision}"
-            echo "PLATFORM_SOURCE_DIR=${RUNNER_TEMP}/platform-source"
-            echo "OWNER_BOUND_GO_WORK=${RUNNER_TEMP}/owner-bound-source/go.work"
-          } >>"${GITHUB_ENV}"
-      - name: Check out exact private Platform source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # tag=v4.2.2
-        with:
-          repository: appthrust/platform
-          ref: ${{ env.PLATFORM_SOURCE_REVISION }}
-          path: platform-source
-          fetch-depth: 1
-          persist-credentials: false
-          token: ${{ secrets.APPTHRUST_PLATFORM_READ_TOKEN }}
-      - name: Isolate exact Platform source
-        shell: bash
-        run: |
-          set -euo pipefail
-          mv platform-source "${PLATFORM_SOURCE_DIR}"
+      - name: Calculate go version
+        id: vars
+        run: echo "go_version=$(make go-version)" >> $GITHUB_OUTPUT
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # tag=v7.0.0
         with:
-          go-version-file: ${{ env.PLATFORM_SOURCE_DIR }}/go.mod
-      - name: Prepare exact owner-bound workspace
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./hack/appthrust/prepare-capacity-fence-workspace.sh \
-            "${PLATFORM_SOURCE_DIR}" \
-            "${OWNER_BOUND_GO_WORK}"
-          echo "GOWORK=${OWNER_BOUND_GO_WORK}" >>"${GITHUB_ENV}"
+          go-version: ${{ steps.vars.outputs.go_version }}
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # tag=v9.3.0
         with:

@@ -32,7 +32,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	k8stypes "k8s.io/apimachinery/pkg/types"
+	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -121,7 +121,6 @@ func TestCapacityFenceConcurrentCreatesCapacityOneClaimsOnceAndRunsAtMostOne(t *
 	results := make(chan error, 2)
 	var workers sync.WaitGroup
 	for _, identity := range []CapacityFenceIdentity{first, second} {
-		identity := identity
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
@@ -579,7 +578,6 @@ func TestCapacityFenceExactDiscoveryFiltersBindingPagesAllStatesAndCardinality(t
 			service, ec2Mock, machineScope := newCapacityFenceCreateService(t, authorizer, identity)
 			machineScope.AWSMachine.Spec.AdditionalTags[CapacityFenceClaimBindingTagKey] = permit.ClaimBindingDigest
 			for pageIndex, page := range testCase.pages {
-				pageIndex, page := pageIndex, page
 				ec2Mock.EXPECT().DescribeInstances(context.TODO(), gomock.Any()).Times(1).DoAndReturn(
 					func(_ context.Context, input *awsec2.DescribeInstancesInput, _ ...func(*awsec2.Options)) (*awsec2.DescribeInstancesOutput, error) {
 						assertCapacityFenceDiscoveryInput(t, input, permit.ClaimBindingDigest, pageIndex)
@@ -718,7 +716,6 @@ func TestCapacityFenceReceiptRecoveryRejectsUnboundFirstMatch(t *testing.T) {
 	}
 
 	for _, testCase := range testCases {
-		testCase := testCase
 		t.Run(testCase.name, func(t *testing.T) {
 			authorizer := newCapacityFenceTestAuthorizer(capacityFenceTestNow, permit)
 			if _, err := authorizer.Claim(context.Background(), identity); err != nil {
@@ -1084,11 +1081,11 @@ func capacityFenceTestIdentity(machineName, awsMachineName string) CapacityFence
 	return CapacityFenceIdentity{
 		MachineNamespace:     "default",
 		MachineName:          machineName,
-		MachineUID:           k8stypes.UID("uid-" + machineName),
+		MachineUID:           apimachinerytypes.UID("uid-" + machineName),
 		MachineGeneration:    7,
 		AWSMachineNamespace:  "default",
 		AWSMachineName:       awsMachineName,
-		AWSMachineUID:        k8stypes.UID("uid-" + awsMachineName),
+		AWSMachineUID:        apimachinerytypes.UID("uid-" + awsMachineName),
 		AWSMachineGeneration: 11,
 	}
 }

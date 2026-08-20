@@ -849,7 +849,6 @@ func (s *Service) runInstanceWithContext(ctx context.Context, role string, i *in
 		}); err != nil {
 			return nil, errors.Wrap(err, "capacity fence denied provider request drift")
 		}
-
 	}
 
 	out, err := s.EC2Client.RunInstances(ctx, input)
