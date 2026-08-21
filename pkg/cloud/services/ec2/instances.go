@@ -53,33 +53,61 @@ const (
 func (s *Service) GetRunningInstanceByTags(scope *scope.MachineScope) (*infrav1.Instance, error) {
 	s.scope.Debug("Looking for existing machine instance by tags")
 
-	input := &ec2.DescribeInstancesInput{
-		Filters: []types.Filter{
-			filter.EC2.ClusterOwned(s.scope.Name()),
-			filter.EC2.Name(scope.Name()),
-			filter.EC2.InstanceStates(types.InstanceStateNamePending, types.InstanceStateNameRunning),
-		},
+	fenced := s.capacityFenceAuthorizer != nil
+	filters := []types.Filter{
+		filter.EC2.ClusterOwned(s.scope.Name()),
+		filter.EC2.Name(scope.Name()),
 	}
-
-	out, err := s.EC2Client.DescribeInstances(context.TODO(), input)
-	switch {
-	case awserrors.IsNotFound(err):
-		return nil, nil
-	case err != nil:
-		record.Eventf(s.scope.InfraCluster(), "FailedDescribeInstances", "Failed to describe instances by tags: %v", err)
-		return nil, errors.Wrap(err, "failed to describe instances by tags")
-	}
-
-	// TODO: currently just returns the first matched instance, need to
-	// better rationalize how to find the right instance to return if multiple
-	// match
-	for _, res := range out.Reservations {
-		for _, inst := range res.Instances {
-			return s.SDKToInstance(inst)
+	claimBindingDigest := ""
+	if fenced {
+		var ok bool
+		claimBindingDigest, ok = scope.AWSMachine.Spec.AdditionalTags[CapacityFenceClaimBindingTagKey]
+		if !ok || !isCanonicalSHA256Digest(claimBindingDigest) {
+			return nil, errors.New("capacity fence discovery requires the exact canonical claim-binding tag from AWSMachine.spec.additionalTags")
 		}
+		filters = append(filters, types.Filter{
+			Name:   aws.String("tag:" + CapacityFenceClaimBindingTagKey),
+			Values: []string{claimBindingDigest},
+		})
+	} else {
+		filters = append(filters, filter.EC2.InstanceStates(types.InstanceStateNamePending, types.InstanceStateNameRunning))
 	}
 
-	return nil, nil
+	input := &ec2.DescribeInstancesInput{Filters: filters}
+	var matches []types.Instance
+	for {
+		out, err := s.EC2Client.DescribeInstances(context.TODO(), input)
+		switch {
+		case awserrors.IsNotFound(err):
+			return nil, nil
+		case err != nil:
+			record.Eventf(s.scope.InfraCluster(), "FailedDescribeInstances", "Failed to describe instances by tags: %v", err)
+			return nil, errors.Wrap(err, "failed to describe instances by tags")
+		}
+		for _, reservation := range out.Reservations {
+			for _, instance := range reservation.Instances {
+				if fenced && converters.TagsToMap(instance.Tags)[CapacityFenceClaimBindingTagKey] != claimBindingDigest {
+					return nil, errors.New("capacity fence discovery returned an instance without the requested exact claim-binding tag")
+				}
+				if !fenced {
+					return s.SDKToInstance(instance)
+				}
+				matches = append(matches, instance)
+			}
+		}
+		if !fenced || out.NextToken == nil || aws.ToString(out.NextToken) == "" {
+			break
+		}
+		input.NextToken = out.NextToken
+	}
+
+	if !fenced || len(matches) == 0 {
+		return nil, nil
+	}
+	if len(matches) != 1 {
+		return nil, fmt.Errorf("capacity fence discovery found %d instances with exact claim-binding tag %q", len(matches), claimBindingDigest)
+	}
+	return s.SDKToInstance(matches[0])
 }
 
 // InstanceIfExists returns the existing instance by id and errors if it cannot find the instance(ErrInstanceNotFoundByID) or API call fails (ErrDescribeInstance).
@@ -290,9 +318,22 @@ func (s *Service) CreateInstance(ctx context.Context, scope *scope.MachineScope,
 
 	input.CPUOptions = scope.AWSMachine.Spec.CPUOptions
 
+	if s.capacityFenceAuthorizer != nil {
+		if scope.AWSMachine.Spec.ProviderID != nil || scope.AWSMachine.Spec.InstanceID != nil {
+			return nil, errors.New("capacity fence rejects caller-supplied providerID or instanceID for create")
+		}
+		claimBindingDigest, ok := scope.AWSMachine.Spec.AdditionalTags[CapacityFenceClaimBindingTagKey]
+		if !ok || !isCanonicalSHA256Digest(claimBindingDigest) {
+			return nil, errors.New("capacity fence requires an exact canonical claim-binding tag on AWSMachine.spec.additionalTags")
+		}
+		if input.Tags[CapacityFenceClaimBindingTagKey] != claimBindingDigest {
+			return nil, errors.New("capacity fence effective create tags do not preserve the AWSMachine claim-binding tag")
+		}
+	}
+
 	s.scope.Debug("Running instance", "machine-role", scope.Role())
 	s.scope.Debug("Running instance with instance metadata options", "metadata options", input.InstanceMetadataOptions)
-	out, err := s.runInstance(scope.Role(), input)
+	out, err := s.runMachineInstance(ctx, scope.Role(), input, CapacityFenceIdentityFromMachineScope(scope))
 	if err != nil {
 		// Only record the failure event if the error is not related to failed dependencies.
 		// This is to avoid spamming failure events since the machine will be requeued by the actuator.
@@ -327,10 +368,12 @@ func (s *Service) CreateInstance(ctx context.Context, scope *scope.MachineScope,
 
 	// Once all the network interfaces attached to the specific instance are found, the similar tags of instance are created for network interfaces too
 	if len(networkInterfaces) > 0 {
+		eniTags := tagsWithoutCapacityFenceClaimBinding(out.Tags)
+
 		s.scope.Debug("Attempting to create tags from resource", "resource-id", out.ID)
 		for _, networkInterface := range networkInterfaces {
 			// Create/Update tags in AWS.
-			if err := s.UpdateResourceTags(networkInterface.NetworkInterfaceId, out.Tags, nil); err != nil {
+			if err := s.UpdateResourceTags(networkInterface.NetworkInterfaceId, eniTags, nil); err != nil {
 				return nil, errors.Wrapf(err, "failed to create tags for resource %q: ", *networkInterface.NetworkInterfaceId)
 			}
 		}
@@ -338,6 +381,20 @@ func (s *Service) CreateInstance(ctx context.Context, scope *scope.MachineScope,
 
 	record.Eventf(scope.AWSMachine, "SuccessfulCreate", "Created new %s instance with id %q", scope.Role(), out.ID)
 	return out, nil
+}
+
+func tagsWithoutCapacityFenceClaimBinding(tags map[string]string) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+
+	filteredTags := make(map[string]string, len(tags))
+	for key, value := range tags {
+		if key != CapacityFenceClaimBindingTagKey {
+			filteredTags[key] = value
+		}
+	}
+	return filteredTags
 }
 
 // findSubnet attempts to retrieve a subnet ID in the following order:
@@ -584,6 +641,17 @@ func (s *Service) TerminateInstanceAndWait(instanceID string) error {
 }
 
 func (s *Service) runInstance(role string, i *infrav1.Instance) (*infrav1.Instance, error) {
+	return s.runInstanceWithContext(context.TODO(), role, i, nil)
+}
+
+func (s *Service) runMachineInstance(ctx context.Context, role string, i *infrav1.Instance, identity CapacityFenceIdentity) (*infrav1.Instance, error) {
+	if s.capacityFenceAuthorizer == nil {
+		return s.runInstance(role, i)
+	}
+	return s.runInstanceWithContext(ctx, role, i, &identity)
+}
+
+func (s *Service) runInstanceWithContext(ctx context.Context, role string, i *infrav1.Instance, identity *CapacityFenceIdentity) (*infrav1.Instance, error) {
 	input := &ec2.RunInstancesInput{
 		InstanceType: types.InstanceType(i.Type),
 		ImageId:      aws.String(i.ImageID),
@@ -753,7 +821,37 @@ func (s *Service) runInstance(role string, i *infrav1.Instance) (*infrav1.Instan
 		}
 	}
 
-	out, err := s.EC2Client.RunInstances(context.TODO(), input)
+	var capacityFenceClaim *CapacityFenceClaim
+	if identity != nil && s.capacityFenceAuthorizer != nil {
+		if err := identity.Validate(); err != nil {
+			return nil, errors.Wrap(err, "capacity fence provider identity is invalid")
+		}
+		var err error
+		capacityFenceClaim, err = s.capacityFenceAuthorizer.Claim(ctx, *identity)
+		if err != nil {
+			return nil, errors.Wrap(err, "capacity fence denied instance creation")
+		}
+		if err := capacityFenceClaim.Validate(); err != nil {
+			return nil, errors.Wrap(err, "capacity fence returned invalid claim")
+		}
+		if got := i.Tags[CapacityFenceClaimBindingTagKey]; got != capacityFenceClaim.ClaimBindingDigest {
+			return nil, errors.New("capacity fence claim-binding tag does not match the exact provider claim")
+		}
+		input.ClientToken = aws.String(capacityFenceClaim.ClientToken)
+		providerRequestDigest, err := CapacityFenceProviderRequestDigest(input)
+		if err != nil {
+			return nil, errors.Wrap(err, "capacity fence could not digest finalized RunInstances request")
+		}
+		if err := s.capacityFenceAuthorizer.BindProviderRequest(ctx, *identity, CapacityFenceProviderRequest{
+			ClaimID:               capacityFenceClaim.ClaimID,
+			ClaimBindingDigest:    capacityFenceClaim.ClaimBindingDigest,
+			ProviderRequestDigest: providerRequestDigest,
+		}); err != nil {
+			return nil, errors.Wrap(err, "capacity fence denied provider request drift")
+		}
+	}
+
+	out, err := s.EC2Client.RunInstances(ctx, input)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to run instance")
 	}
@@ -762,7 +860,22 @@ func (s *Service) runInstance(role string, i *infrav1.Instance) (*infrav1.Instan
 		return nil, errors.Errorf("no instance returned for reservation %v", out)
 	}
 
-	return s.SDKToInstance(out.Instances[0])
+	instance, err := s.SDKToInstance(out.Instances[0])
+	if err != nil {
+		return nil, err
+	}
+
+	if capacityFenceClaim != nil {
+		receipt, err := capacityFenceClaim.MutationReceipt(*identity, instance.ID)
+		if err != nil {
+			return nil, errors.Wrap(err, "capacity fence could not construct mutation receipt")
+		}
+		if err := s.capacityFenceAuthorizer.Record(ctx, receipt); err != nil {
+			return nil, errors.Wrap(err, "failed to record capacity fence mutation receipt")
+		}
+	}
+
+	return instance, nil
 }
 
 func volumeToBlockDeviceMapping(v *infrav1.Volume) types.BlockDeviceMapping {
@@ -848,6 +961,8 @@ func (s *Service) UpdateInstanceSecurityGroups(instanceID string, ids []string) 
 // receiving to avoid calling AWS if we don't need to.
 func (s *Service) UpdateResourceTags(resourceID *string, create, remove map[string]string) error {
 	s.scope.Debug("Attempting to update tags on resource", "resource-id", aws.ToString(resourceID))
+	create = tagsWithoutCapacityFenceClaimBinding(create)
+	remove = tagsWithoutCapacityFenceClaimBinding(remove)
 
 	// If we have anything to create or update
 	if len(create) > 0 {

@@ -60,6 +60,37 @@ import (
 
 const providerID = "aws:////myMachine"
 
+type deletionCapacityFenceAuthorizer struct {
+	ensureReceipt            func(context.Context, ec2Service.CapacityFenceIdentity, infrav1.Instance) error
+	unresolvedProviderEffect func(context.Context, ec2Service.CapacityFenceIdentity) (bool, error)
+}
+
+func (a *deletionCapacityFenceAuthorizer) Claim(context.Context, ec2Service.CapacityFenceIdentity) (*ec2Service.CapacityFenceClaim, error) {
+	return nil, errors.New("unexpected capacity fence claim")
+}
+
+func (a *deletionCapacityFenceAuthorizer) BindProviderRequest(context.Context, ec2Service.CapacityFenceIdentity, ec2Service.CapacityFenceProviderRequest) error {
+	return errors.New("unexpected capacity fence provider request bind")
+}
+
+func (a *deletionCapacityFenceAuthorizer) Record(context.Context, ec2Service.CapacityFenceMutationReceipt) error {
+	return errors.New("unexpected capacity fence receipt record")
+}
+
+func (a *deletionCapacityFenceAuthorizer) EnsureReceipt(ctx context.Context, identity ec2Service.CapacityFenceIdentity, instance infrav1.Instance) error {
+	if a.ensureReceipt == nil {
+		return nil
+	}
+	return a.ensureReceipt(ctx, identity, instance)
+}
+
+func (a *deletionCapacityFenceAuthorizer) HasUnresolvedProviderRequest(ctx context.Context, identity ec2Service.CapacityFenceIdentity) (bool, error) {
+	if a.unresolvedProviderEffect == nil {
+		return false, nil
+	}
+	return a.unresolvedProviderEffect(ctx, identity)
+}
+
 func TestAWSMachineReconciler(t *testing.T) {
 	var (
 		reconciler     AWSMachineReconciler
@@ -1646,6 +1677,17 @@ func TestAWSMachineReconciler(t *testing.T) {
 				metav1.FinalizerDeleteDependents,
 			}
 		}
+		fenceIdentity := func(awsMachine *infrav1.AWSMachine) {
+			awsMachine.Namespace = "default"
+			awsMachine.UID = types.UID("aws-machine-uid")
+			awsMachine.Generation = 5
+		}
+		setMachineIdentity := func() {
+			ms.Machine.Namespace = "default"
+			ms.Machine.Name = "machine-0"
+			ms.Machine.UID = types.UID("machine-uid")
+			ms.Machine.Generation = 3
+		}
 		t.Run("should exit immediately on an error state", func(t *testing.T) {
 			g := NewWithT(t)
 			awsMachine := getAWSMachine()
@@ -1678,6 +1720,136 @@ func TestAWSMachineReconciler(t *testing.T) {
 			g.Expect(buf.String()).To(ContainSubstring("Unable to locate EC2 instance by ID or tags"))
 			g.Expect(ms.AWSMachine.Finalizers).To(ConsistOf(metav1.FinalizerDeleteDependents))
 			g.Eventually(recorder.Events).Should(Receive(ContainSubstring("NoInstanceFound")))
+		})
+		t.Run("retains finalizer when zero discovery follows a bound provider request without a receipt", func(t *testing.T) {
+			g := NewWithT(t)
+			awsMachine := getAWSMachine()
+			fenceIdentity(awsMachine)
+			setup(t, g, awsMachine)
+			defer teardown(t, g)
+			finalizer(t, g)
+			setMachineIdentity()
+
+			queryCalls := 0
+			reconciler.CapacityFenceAuthorizer = &deletionCapacityFenceAuthorizer{
+				unresolvedProviderEffect: func(_ context.Context, identity ec2Service.CapacityFenceIdentity) (bool, error) {
+					queryCalls++
+					if err := identity.Validate(); err != nil {
+						return false, err
+					}
+					return true, nil
+				},
+			}
+			ec2Svc.EXPECT().GetRunningInstanceByTags(gomock.Any()).Return(nil, nil)
+			secretSvc.EXPECT().Delete(gomock.Any()).Times(0)
+
+			result, err := reconciler.reconcileDelete(context.TODO(), ms, cs, cs, cs, cs)
+			g.Expect(err).To(BeNil())
+			g.Expect(result.RequeueAfter).To(Equal(time.Minute))
+			g.Expect(queryCalls).To(Equal(1))
+			g.Expect(ms.AWSMachine.Finalizers).To(ContainElement(infrav1.MachineFinalizer))
+		})
+		t.Run("removes finalizer after zero discovery without a persisted bound provider request", func(t *testing.T) {
+			g := NewWithT(t)
+			awsMachine := getAWSMachine()
+			fenceIdentity(awsMachine)
+			setup(t, g, awsMachine)
+			defer teardown(t, g)
+			finalizer(t, g)
+			setMachineIdentity()
+
+			queryCalls := 0
+			reconciler.CapacityFenceAuthorizer = &deletionCapacityFenceAuthorizer{
+				unresolvedProviderEffect: func(_ context.Context, identity ec2Service.CapacityFenceIdentity) (bool, error) {
+					queryCalls++
+					if err := identity.Validate(); err != nil {
+						return false, err
+					}
+					return false, nil
+				},
+			}
+			ec2Svc.EXPECT().GetRunningInstanceByTags(gomock.Any()).Return(nil, nil)
+			secretSvc.EXPECT().Delete(gomock.Any()).Return(nil).AnyTimes()
+
+			result, err := reconciler.reconcileDelete(context.TODO(), ms, cs, cs, cs, cs)
+			g.Expect(err).To(BeNil())
+			g.Expect(result.RequeueAfter).To(BeZero())
+			g.Expect(queryCalls).To(Equal(1))
+			g.Expect(ms.AWSMachine.Finalizers).To(ConsistOf(metav1.FinalizerDeleteDependents))
+		})
+		t.Run("rejects a wrong-tag ProviderID deletion before provider mutations", func(t *testing.T) {
+			g := NewWithT(t)
+			awsMachine := getAWSMachine()
+			fenceIdentity(awsMachine)
+			setup(t, g, awsMachine)
+			defer teardown(t, g)
+			finalizer(t, g)
+			setMachineIdentity()
+
+			const expectedClaimBinding = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			receiptCalls := 0
+			reconciler.CapacityFenceAuthorizer = &deletionCapacityFenceAuthorizer{
+				ensureReceipt: func(_ context.Context, _ ec2Service.CapacityFenceIdentity, instance infrav1.Instance) error {
+					receiptCalls++
+					if instance.Tags[ec2Service.CapacityFenceClaimBindingTagKey] != expectedClaimBinding {
+						return errors.New("provider claim-binding tag does not match the persisted claim")
+					}
+					return nil
+				},
+			}
+			ms.AWSMachine.Spec.ProviderID = ptr.To(providerID)
+			ec2Svc.EXPECT().InstanceIfExists(PointsTo("myMachine")).Return(&infrav1.Instance{
+				ID:    "i-0123456789abcdef0",
+				State: infrav1.InstanceStatePending,
+				Tags:  map[string]string{ec2Service.CapacityFenceClaimBindingTagKey: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+			}, nil)
+			secretSvc.EXPECT().Delete(gomock.Any()).Times(0)
+
+			_, err := reconciler.reconcileDelete(context.TODO(), ms, cs, cs, cs, cs)
+			g.Expect(err).To(MatchError(ContainSubstring("provider claim-binding tag does not match the persisted claim")))
+			g.Expect(receiptCalls).To(Equal(1))
+			g.Expect(ms.AWSMachine.Finalizers).To(ContainElement(infrav1.MachineFinalizer))
+		})
+		t.Run("validates the receipt before terminating a discovered instance", func(t *testing.T) {
+			g := NewWithT(t)
+			awsMachine := getAWSMachine()
+			fenceIdentity(awsMachine)
+			setup(t, g, awsMachine)
+			defer teardown(t, g)
+			finalizer(t, g)
+			setMachineIdentity()
+
+			const expectedClaimBinding = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			receiptValidated := false
+			reconciler.CapacityFenceAuthorizer = &deletionCapacityFenceAuthorizer{
+				ensureReceipt: func(_ context.Context, identity ec2Service.CapacityFenceIdentity, instance infrav1.Instance) error {
+					if err := identity.Validate(); err != nil {
+						return err
+					}
+					if instance.Tags[ec2Service.CapacityFenceClaimBindingTagKey] != expectedClaimBinding {
+						return errors.New("provider claim-binding tag does not match the persisted claim")
+					}
+					receiptValidated = true
+					return nil
+				},
+			}
+			ms.AWSMachine.Spec.ProviderID = ptr.To(providerID)
+			ec2Svc.EXPECT().InstanceIfExists(PointsTo("myMachine")).Return(&infrav1.Instance{
+				ID:    "i-0123456789abcdef0",
+				State: infrav1.InstanceStatePending,
+				Tags:  map[string]string{ec2Service.CapacityFenceClaimBindingTagKey: expectedClaimBinding},
+			}, nil)
+			secretSvc.EXPECT().Delete(gomock.Any()).Return(nil).AnyTimes()
+			ec2Svc.EXPECT().TerminateInstance("i-0123456789abcdef0").Do(func(string) {
+				if !receiptValidated {
+					t.Error("TerminateInstance() ran before capacity fence receipt validation")
+				}
+			}).Return(nil)
+
+			result, err := reconciler.reconcileDelete(context.TODO(), ms, cs, cs, cs, cs)
+			g.Expect(err).To(BeNil())
+			g.Expect(result.RequeueAfter).To(Equal(time.Minute))
+			g.Expect(receiptValidated).To(BeTrue())
 		})
 		t.Run("should ignore instances in shutting down state", func(t *testing.T) {
 			g := NewWithT(t)

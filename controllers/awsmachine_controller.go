@@ -92,6 +92,8 @@ type AWSMachineReconciler struct {
 	secretsManagerServiceFactory func(cloud.ClusterScoper) services.SecretInterface
 	SSMServiceFactory            func(cloud.ClusterScoper) services.SecretInterface
 	objectStoreServiceFactory    func(cloud.ClusterScoper) services.ObjectStoreInterface
+	// CapacityFenceAuthorizer optionally fences AWSMachine provider mutations.
+	CapacityFenceAuthorizer      ec2.CapacityFenceAuthorizer
 	WatchFilterValue             string
 	TagUnmanagedNetworkResources bool
 	MaxWaitActiveUpdateDelete    time.Duration
@@ -107,7 +109,7 @@ func (r *AWSMachineReconciler) getEC2Service(scope scope.EC2Scope) services.EC2I
 		return r.ec2ServiceFactory(scope)
 	}
 
-	return ec2.NewService(scope)
+	return ec2.NewService(scope).WithCapacityFenceAuthorizer(r.CapacityFenceAuthorizer)
 }
 
 func (r *AWSMachineReconciler) getSecretsManagerService(scope cloud.ClusterScoper) services.SecretInterface {
@@ -151,11 +153,15 @@ func (r *AWSMachineReconciler) getObjectStoreService(scope scope.S3Scope) servic
 }
 
 // +kubebuilder:rbac:groups=controlplane.cluster.x-k8s.io,resources=*,verbs=get;list;watch
+// +kubebuilder:rbac:groups=controlplane.appthrust.io,resources=appthrusttaloscontrolplanes,verbs=get
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=awsmachines,verbs=create;get;list;watch;update;patch;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=awsmachines/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=awsmachinepools/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=platform.appthrust.io,resources=appthrustclusters;capacityreservations;clusteroperations,verbs=get
+// +kubebuilder:rbac:groups=platform.appthrust.io,resources=machineprovisioningpermits,verbs=get;list;watch
+// +kubebuilder:rbac:groups=platform.appthrust.io,resources=machineprovisioningpermits/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=secrets;,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;create;update;patch
@@ -313,7 +319,10 @@ func (r *AWSMachineReconciler) reconcileDelete(ctx context.Context, machineScope
 
 	ec2Service := r.getEC2Service(ec2Scope)
 
-	if !machineScope.IsMachinePoolMachine() {
+	// Preserve stock CAPA ordering for direct callers that deliberately omit
+	// the fence. A configured manager defers external bootstrap cleanup until
+	// provider ownership has been recovered below.
+	if r.CapacityFenceAuthorizer == nil && !machineScope.IsMachinePoolMachine() {
 		if err := r.deleteBootstrapData(ctx, machineScope, clusterScope, objectStoreScope); err != nil {
 			machineScope.Error(err, "unable to delete AWSMachine bootstrap data")
 			return ctrl.Result{}, err
@@ -327,6 +336,28 @@ func (r *AWSMachineReconciler) reconcileDelete(ctx context.Context, machineScope
 	}
 
 	if instance == nil {
+		if r.CapacityFenceAuthorizer != nil {
+			identity := ec2.CapacityFenceIdentityFromMachineScope(machineScope)
+			if err := identity.Validate(); err != nil {
+				return ctrl.Result{}, errors.Wrap(err, "capacity fence deletion identity is invalid")
+			}
+			unresolved, err := r.CapacityFenceAuthorizer.HasUnresolvedProviderRequest(ctx, identity)
+			if err != nil {
+				machineScope.Error(err, "unable to determine whether capacity fence has an unresolved provider request")
+				return ctrl.Result{}, err
+			}
+			if unresolved {
+				machineScope.Info("Capacity fence has a provider request without a receipt; retaining finalizer", "requeueAfter", time.Minute)
+				return ctrl.Result{RequeueAfter: time.Minute}, nil
+			}
+			if !machineScope.IsMachinePoolMachine() {
+				if err := r.deleteBootstrapData(ctx, machineScope, clusterScope, objectStoreScope); err != nil {
+					machineScope.Error(err, "unable to delete AWSMachine bootstrap data")
+					return ctrl.Result{}, err
+				}
+			}
+		}
+
 		// The machine was never created or was deleted by some other entity
 		// One way to reach this state:
 		// 1. Scale deployment to 0
@@ -341,6 +372,17 @@ func (r *AWSMachineReconciler) reconcileDelete(ctx context.Context, machineScope
 	}
 
 	machineScope.Debug("EC2 instance found matching deleted AWSMachine", "instance-id", instance.ID)
+
+	if err := ec2.EnsureCapacityFenceReceipt(ctx, r.CapacityFenceAuthorizer, machineScope, instance); err != nil {
+		machineScope.Error(err, "unable to ensure capacity fence mutation receipt before deletion")
+		return ctrl.Result{}, err
+	}
+	if r.CapacityFenceAuthorizer != nil && !machineScope.IsMachinePoolMachine() {
+		if err := r.deleteBootstrapData(ctx, machineScope, clusterScope, objectStoreScope); err != nil {
+			machineScope.Error(err, "unable to delete AWSMachine bootstrap data")
+			return ctrl.Result{}, err
+		}
+	}
 
 	if err := r.reconcileLBAttachment(ctx, machineScope, elbScope, instance); err != nil {
 		// We are tolerating AccessDenied error, so this won't block for users with older version of IAM;
@@ -546,6 +588,19 @@ func (r *AWSMachineReconciler) reconcileNormal(ctx context.Context, machineScope
 		machineScope.Error(err, "unable to find instance")
 		v1beta1conditions.MarkUnknown(machineScope.AWSMachine, infrav1.InstanceReadyCondition, infrav1.InstanceNotFoundReason, "%s", err.Error())
 		return ctrl.Result{}, err
+	}
+	if instance == nil && r.CapacityFenceAuthorizer != nil && (machineScope.AWSMachine.Spec.ProviderID != nil || machineScope.AWSMachine.Spec.InstanceID != nil) {
+		return ctrl.Result{}, errors.New("capacity fence rejects caller-supplied providerID or instanceID for create")
+	}
+
+	// A configured fence accepts ProviderID adoption only after independently
+	// validating exact provider claim evidence. This is deliberately before any
+	// provider ID or receipt persistence in this reconciliation.
+	if instance != nil {
+		if err := ec2.EnsureCapacityFenceReceipt(ctx, r.CapacityFenceAuthorizer, machineScope, instance); err != nil {
+			machineScope.Error(err, "unable to ensure capacity fence mutation receipt")
+			return ctrl.Result{}, err
+		}
 	}
 
 	// If the AWSMachine doesn't have our finalizer, add it.
