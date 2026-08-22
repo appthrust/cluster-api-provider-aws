@@ -250,6 +250,29 @@ func TestCapacityFenceReservedBindingTagIsNeverMutatedAfterCreate(t *testing.T) 
 	}
 }
 
+func TestCapacityFenceClaimBindingTagStaysOnInstanceTagSpecification(t *testing.T) {
+	specifications := instanceTagSpecifications(map[string]string{
+		CapacityFenceClaimBindingTagKey: capacityFenceTestDefaultClaimBindingDigest,
+		"example.com/ordinary":          "ordinary-value",
+	}, true)
+	if len(specifications) != 3 {
+		t.Fatalf("tag specification count = %d, want instance, volume, and network interface", len(specifications))
+	}
+	for _, specification := range specifications {
+		tags := make(map[string]string, len(specification.Tags))
+		for _, tag := range specification.Tags {
+			tags[aws.ToString(tag.Key)] = aws.ToString(tag.Value)
+		}
+		if tags["example.com/ordinary"] != "ordinary-value" {
+			t.Fatalf("%s ordinary tag = %q", specification.ResourceType, tags["example.com/ordinary"])
+		}
+		_, hasBinding := tags[CapacityFenceClaimBindingTagKey]
+		if (specification.ResourceType == awstypes.ResourceTypeInstance) != hasBinding {
+			t.Fatalf("%s claim-binding presence = %v, want instance only", specification.ResourceType, hasBinding)
+		}
+	}
+}
+
 func TestCapacityFenceRejectsSpoofedReservedTag(t *testing.T) {
 	identity := capacityFenceTestIdentity("machine-0", "aws-machine-0")
 	permit := newCapacityFenceTestPermit(identity, "permit-spoof", "stable-spoof-token")
