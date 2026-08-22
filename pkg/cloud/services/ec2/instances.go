@@ -397,6 +397,37 @@ func tagsWithoutCapacityFenceClaimBinding(tags map[string]string) map[string]str
 	return filteredTags
 }
 
+func instanceTagSpecifications(tags map[string]string, includeNetworkInterface bool) []types.TagSpecification {
+	if len(tags) == 0 {
+		return nil
+	}
+	resources := []types.ResourceType{types.ResourceTypeInstance, types.ResourceTypeVolume}
+	if includeNetworkInterface {
+		resources = append(resources, types.ResourceTypeNetworkInterface)
+	}
+	specifications := make([]types.TagSpecification, 0, len(resources))
+	for _, resource := range resources {
+		resourceTags := tags
+		if resource != types.ResourceTypeInstance {
+			resourceTags = tagsWithoutCapacityFenceClaimBinding(tags)
+		}
+		keys := make([]string, 0, len(resourceTags))
+		for key := range resourceTags {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		specification := types.TagSpecification{ResourceType: resource}
+		for _, key := range keys {
+			specification.Tags = append(specification.Tags, types.Tag{
+				Key:   aws.String(key),
+				Value: aws.String(resourceTags[key]),
+			})
+		}
+		specifications = append(specifications, specification)
+	}
+	return specifications
+}
+
 // findSubnet attempts to retrieve a subnet ID in the following order:
 // - subnetID specified in machine configuration,
 // - subnet based on filters in machine configuration
@@ -736,32 +767,7 @@ func (s *Service) runInstanceWithContext(ctx context.Context, role string, i *in
 		input.BlockDeviceMappings = blockdeviceMappings
 	}
 
-	if len(i.Tags) > 0 {
-		resources := []types.ResourceType{types.ResourceTypeInstance, types.ResourceTypeVolume}
-
-		if len(i.NetworkInterfaces) == 0 {
-			resources = append(resources, types.ResourceTypeNetworkInterface)
-		}
-
-		for _, r := range resources {
-			spec := types.TagSpecification{ResourceType: r}
-
-			// We need to sort keys for tests to work
-			keys := make([]string, 0, len(i.Tags))
-			for k := range i.Tags {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, key := range keys {
-				spec.Tags = append(spec.Tags, types.Tag{
-					Key:   aws.String(key),
-					Value: aws.String(i.Tags[key]),
-				})
-			}
-
-			input.TagSpecifications = append(input.TagSpecifications, spec)
-		}
-	}
+	input.TagSpecifications = instanceTagSpecifications(i.Tags, len(i.NetworkInterfaces) == 0)
 	marketOptions, err := getInstanceMarketOptionsRequest(i)
 	if err != nil {
 		return nil, err
