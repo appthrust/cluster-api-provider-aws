@@ -27,8 +27,7 @@ import (
 )
 
 const (
-	eksClusterPolicyName            = "AmazonEKSClusterPolicy"
-	capacityFenceClaimBindingTagKey = "capacityfence.appthrust.io/claim-binding"
+	eksClusterPolicyName = "AmazonEKSClusterPolicy"
 )
 
 func (t Template) controllersPolicyGroups() []string {
@@ -78,31 +77,6 @@ func (t Template) controllersRolePolicy() []cfn_iam.Role_Policy {
 // ControllersPolicy will create a policy from a Template for AWS Controllers.
 func (t Template) ControllersPolicy() *iamv1.PolicyDocument {
 	statement := []iamv1.StatementEntry{
-		{
-			Sid:      "DenyReservedClaimBindingCreateTagsOutsideRunInstances",
-			Effect:   iamv1.EffectDeny,
-			Resource: iamv1.Resources{iamv1.Any},
-			Action:   iamv1.Actions{"ec2:CreateTags"},
-			Condition: iamv1.Conditions{
-				iamv1.ConditionOperator("ForAnyValue:StringEquals"): map[string]string{
-					"aws:TagKeys": capacityFenceClaimBindingTagKey,
-				},
-				iamv1.StringNotEquals: map[string]string{
-					"ec2:CreateAction": "RunInstances",
-				},
-			},
-		},
-		{
-			Sid:      "DenyReservedClaimBindingDeleteTags",
-			Effect:   iamv1.EffectDeny,
-			Resource: iamv1.Resources{iamv1.Any},
-			Action:   iamv1.Actions{"ec2:DeleteTags"},
-			Condition: iamv1.Conditions{
-				iamv1.ConditionOperator("ForAnyValue:StringEquals"): map[string]string{
-					"aws:TagKeys": capacityFenceClaimBindingTagKey,
-				},
-			},
-		},
 		{
 			Effect:   iamv1.EffectAllow,
 			Resource: iamv1.Resources{iamv1.Any},

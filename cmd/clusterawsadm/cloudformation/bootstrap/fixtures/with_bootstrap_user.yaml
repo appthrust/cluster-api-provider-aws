@@ -147,26 +147,6 @@ Resources:
       PolicyDocument:
         Statement:
         - Action:
-          - ec2:CreateTags
-          Condition:
-            ForAnyValue:StringEquals:
-              aws:TagKeys: capacityfence.appthrust.io/claim-binding
-            StringNotEquals:
-              ec2:CreateAction: RunInstances
-          Effect: Deny
-          Resource:
-          - '*'
-          Sid: DenyReservedClaimBindingCreateTagsOutsideRunInstances
-        - Action:
-          - ec2:DeleteTags
-          Condition:
-            ForAnyValue:StringEquals:
-              aws:TagKeys: capacityfence.appthrust.io/claim-binding
-          Effect: Deny
-          Resource:
-          - '*'
-          Sid: DenyReservedClaimBindingDeleteTags
-        - Action:
           - ec2:DescribeIpamPools
           - ec2:AllocateIpamPoolCidr
           - ec2:AttachNetworkInterface
