@@ -33,8 +33,6 @@ type Service struct {
 	EC2Client  common.EC2API
 	netService *network.Service
 
-	capacityFenceAuthorizer CapacityFenceAuthorizer
-
 	// SSMClient is used to look up the official EKS AMI ID
 	SSMClient ssm.SSMAPI
 
@@ -54,14 +52,6 @@ func NewService(clusterScope scope.EC2Scope) *Service {
 		netService:                    network.NewService(clusterScope.(scope.NetworkScope)),
 		InstanceTypeArchitectureCache: cache.InstanceTypeArchitectureCacheSingleton,
 	}
-}
-
-// WithCapacityFenceAuthorizer injects the owner-bound create fence for this Service.
-// Direct callers retain stock CAPA behavior only when they deliberately omit it;
-// the owner-bound manager always injects a concrete adapter.
-func (s *Service) WithCapacityFenceAuthorizer(authorizer CapacityFenceAuthorizer) *Service {
-	s.capacityFenceAuthorizer = authorizer
-	return s
 }
 
 // WithInstanceTypeArchitectureCache overrides the cache for InstanceTypeArchitectureCacheEntry items (nil disables caching).
