@@ -374,15 +374,17 @@ func newCapacityFenceAdapterFixture(t *testing.T) *capacityFenceAdapterFixture {
 		Spec: platformv1alpha1.ClusterOperationSpec{
 			ClusterRef: platformv1alpha1.LocalObjectReference{Name: permit.Spec.AppThrustClusterRef.Name},
 			Type:       platformv1alpha1.ClusterOperationTypeCreate,
-			MachineProvisioningAuthority: &platformv1alpha1.ClusterOperationMachineProvisioningAuthority{
-				PermitName:            permit.Name,
+			MachineProvisioningAuthorities: []platformv1alpha1.ClusterOperationMachineProvisioningAuthority{{
+				PermitName:            common.DnsLabelName(permit.Name),
 				TopologyOwnerRef:      permit.Spec.TopologyOwnerRef,
 				AWSMachineTemplateRef: permit.Spec.AWSMachineTemplateRef,
 				Action:                permit.Spec.Action,
 				Role:                  permit.Spec.Role,
 				Pool:                  permit.Spec.Pool,
 				AllowedCount:          permit.Spec.AllowedCount,
-			},
+			}},
+			Actor:  platformv1alpha1.ClusterOperationActor{Subject: "controller:capacity-fence-adapter", Kind: "Controller"},
+			Reason: "Authorize the exact capacity-fence MachineProvisioningPermit.",
 		},
 		Status: platformv1alpha1.ClusterOperationStatus{ObservedGeneration: 6, Phase: platformv1alpha1.ClusterOperationPhaseRunning},
 	}
@@ -500,10 +502,10 @@ func (f *capacityFenceAdapterFixture) createAmbiguousPermit(t *testing.T) {
 	}
 	operation.Name, operation.UID, operation.ResourceVersion = second.Spec.ClusterOperationRef.Name, types.UID(second.Spec.ClusterOperationRef.UID), ""
 	operation.Spec.ClusterRef.Name = second.Spec.AppThrustClusterRef.Name
-	if operation.Spec.MachineProvisioningAuthority == nil {
-		t.Fatal("original ClusterOperation has no machineProvisioningAuthority")
+	if len(operation.Spec.MachineProvisioningAuthorities) != 1 {
+		t.Fatalf("original ClusterOperation machineProvisioningAuthorities = %d, want one", len(operation.Spec.MachineProvisioningAuthorities))
 	}
-	operation.Spec.MachineProvisioningAuthority.PermitName = second.Name
+	operation.Spec.MachineProvisioningAuthorities[0].PermitName = common.DnsLabelName(second.Name)
 
 	for _, object := range []client.Object{cluster, reservation, operation, second} {
 		if err := f.client.Create(t.Context(), object); err != nil {
