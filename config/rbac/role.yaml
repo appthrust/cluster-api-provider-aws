@@ -130,6 +130,12 @@ rules:
   - list
   - watch
 - apiGroups:
+  - controlplane.appthrust.io
+  resources:
+  - appthrusttaloscontrolplanes
+  verbs:
+  - get
+- apiGroups:
   - controlplane.cluster.x-k8s.io
   resources:
   - '*'
@@ -272,3 +278,27 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - platform.appthrust.io
+  resources:
+  - appthrustclusters
+  - capacityreservations
+  - clusteroperations
+  verbs:
+  - get
+- apiGroups:
+  - platform.appthrust.io
+  resources:
+  - machineprovisioningpermits
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - platform.appthrust.io
+  resources:
+  - machineprovisioningpermits/status
+  verbs:
+  - get
+  - patch
+  - update

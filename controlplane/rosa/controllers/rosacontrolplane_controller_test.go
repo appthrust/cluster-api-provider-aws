@@ -1279,6 +1279,7 @@ func TestROSAControlPlaneReconcilerWithRoleIdentityNamespaceNotAllowed(t *testin
 // cross-account creator resolution can be exercised without real AWS credentials.
 func fakeMultiActionStsHandler(targetAccount, targetARN string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return

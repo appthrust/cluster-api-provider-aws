@@ -64,6 +64,7 @@ import (
 	"sigs.k8s.io/cluster-api-provider-aws/v2/exp/instancestate"
 	expwebhooks "sigs.k8s.io/cluster-api-provider-aws/v2/exp/webhooks"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/feature"
+	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/capacityfenceintegration"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/cloud/endpoints"
 	"sigs.k8s.io/cluster-api-provider-aws/v2/pkg/logger"
 	otel "sigs.k8s.io/cluster-api-provider-aws/v2/pkg/otel/tracing"
@@ -91,6 +92,7 @@ func init() {
 	_ = rosacontrolplanev1.AddToScheme(scheme)
 	_ = infrav1.AddToScheme(scheme)
 	_ = infrav1beta1.AddToScheme(scheme)
+	_ = capacityfenceintegration.AddToScheme(scheme)
 	_ = expinfrav1beta1.AddToScheme(scheme)
 	_ = expinfrav1.AddToScheme(scheme)
 	// +kubebuilder:scaffold:scheme
@@ -371,6 +373,7 @@ func setupReconcilersAndWebhooks(ctx context.Context, mgr ctrl.Manager,
 			Recorder:                     mgr.GetEventRecorderFor("awsmachine-controller"),
 			WatchFilterValue:             watchFilterValue,
 			TagUnmanagedNetworkResources: feature.Gates.Enabled(feature.TagUnmanagedNetworkResources),
+			CapacityFenceAuthorizer:      capacityfenceintegration.NewAuthorizer(mgr.GetClient(), mgr.GetAPIReader()),
 			MaxWaitActiveUpdateDelete:    maxWaitActiveUpdateDelete,
 		}).SetupWithManager(ctx, mgr, controller.Options{MaxConcurrentReconciles: awsMachineConcurrency, RecoverPanic: ptr.To[bool](true)}); err != nil {
 			setupLog.Error(err, "unable to create controller", "controller", "AWSMachine")

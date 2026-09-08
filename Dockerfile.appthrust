@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+
+# This Dockerfile intentionally requires the named platform-source BuildKit
+# context. The owner-bound provider adapter must never build against an ambient
+# go.work file or a developer checkout.
+ARG GO_IMAGE=docker.io/library/golang:1.26.6@sha256:0d1d3a794be25f809dd2cb3160d8c73276c4056a9f8242a138e908ddeee7b6b6
+ARG RUNTIME_IMAGE=gcr.io/distroless/static:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
+FROM --platform=$BUILDPLATFORM ${GO_IMAGE} AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace/capa
+COPY . /workspace/capa
+COPY --from=platform-source . /workspace/platform
+
+RUN test -f /workspace/capa/go.mod && \
+    test -f /workspace/platform/go.mod && \
+    test -f /workspace/platform/model/go.mod && \
+    test -d /workspace/platform/pkg/capacityfence && \
+    mkdir -p /workspace/build /workspace/out && \
+    printf '%s\n' \
+      'go 1.26.6' \
+      '' \
+      'use (' \
+      '  /workspace/capa' \
+      '  /workspace/platform' \
+      '  /workspace/platform/model' \
+      ')' \
+      > /workspace/build/go.work
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOTOOLCHAIN=local GOWORK=/workspace/build/go.work go mod download
+
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOTOOLCHAIN=local GOWORK=/workspace/build/go.work \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -tags=appthrust_owner_bound -trimpath -buildvcs=false -ldflags='-s -w -extldflags "-static"' \
+      -o /workspace/out/manager .
+
+FROM ${RUNTIME_IMAGE}
+COPY --from=builder --chown=65532:65532 /workspace/out/manager /manager
+USER 65532:65532
+ENTRYPOINT ["/manager"]
