@@ -20,6 +20,7 @@ package sts
 import (
 	"context"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	signerv4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
@@ -58,6 +59,11 @@ func (c *ClientWrapper) PresignGetCallerIdentity(ctx context.Context, params *st
 // AssumeRole calls the STS AssumeRole operation.
 func (c *ClientWrapper) AssumeRole(ctx context.Context, params *sts.AssumeRoleInput, optFns ...func(*sts.Options)) (*sts.AssumeRoleOutput, error) {
 	return c.client.AssumeRole(ctx, params, optFns...)
+}
+
+// Credentials returns the provider whose credentials sign this client's requests.
+func (c *ClientWrapper) Credentials() aws.CredentialsProvider {
+	return c.client.Options().Credentials
 }
 
 // Ensure our wrapper implements the STSClient interface.
