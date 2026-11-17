@@ -20,7 +20,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
@@ -301,9 +303,21 @@ func (s *Service) createBaseKubeConfig(cluster *ekstypes.Cluster, userName strin
 	return cfg, nil
 }
 
+// credentialsSource is implemented by STS clients that expose the provider
+// whose credentials sign their requests.
+type credentialsSource interface {
+	Credentials() aws.CredentialsProvider
+}
+
 func (s *Service) generateToken() (string, error) {
 	eksClusterName := s.scope.KubernetesClusterName()
 	ctx := context.Background()
+
+	if source, ok := s.STSClient.(credentialsSource); ok {
+		if err := ensureCredentialLifetime(ctx, source.Credentials(), time.Now(), tokenAgeMins*time.Minute); err != nil {
+			return "", fmt.Errorf("refreshing token signing credentials: %w", err)
+		}
+	}
 
 	presignedReq, err := s.STSClient.PresignGetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}, func(po *sts.PresignOptions) {
 		po.ClientOptions = append(po.ClientOptions, func(o *sts.Options) {
@@ -326,6 +340,35 @@ func (s *Service) generateToken() (string, error) {
 
 	encodedURL := base64.RawURLEncoding.EncodeToString([]byte(presignedReq.URL))
 	return fmt.Sprintf("%s%s", tokenPrefix, encodedURL), nil
+}
+
+// ensureCredentialLifetime refreshes cached credentials that expire within
+// minLifetime of now.
+//
+// A presigned GetCallerIdentity token stops authenticating when the temporary
+// credentials that signed it expire, even inside the token's EKS validity
+// window. The SDK refreshes cached container credentials (EKS Pod Identity,
+// ECS) only five minutes before they expire, and the kubeconfig token is
+// rewritten only when the control plane reconciles, so a token signed shortly
+// before that refresh window is rejected until the next reconcile.
+func ensureCredentialLifetime(ctx context.Context, provider aws.CredentialsProvider, now time.Time, minLifetime time.Duration) error {
+	if provider == nil {
+		return nil
+	}
+	creds, err := provider.Retrieve(ctx)
+	if err != nil {
+		return err
+	}
+	if !creds.CanExpire || !creds.Expires.Before(now.Add(minLifetime)) {
+		return nil
+	}
+	cache, ok := provider.(*aws.CredentialsCache)
+	if !ok {
+		return nil
+	}
+	cache.Invalidate()
+	_, err = cache.Retrieve(ctx)
+	return err
 }
 
 func (s *Service) getKubeConfigUserName(clusterName string, isUser bool) string {
