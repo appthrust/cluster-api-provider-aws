@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.1-experimental
+# syntax=docker/dockerfile:1.14.0@sha256:4c68376a702446fc3c79af22de146a148bc3367e73c25a5803d453b6b3f722fb
 
 # Copyright 2019 The Kubernetes Authors.
 #
@@ -48,7 +48,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 ENTRYPOINT [ "/start.sh", "/workspace/manager" ]
 
 # Copy the controller-manager into a thin image
-FROM gcr.io/distroless/static:nonroot
+FROM gcr.io/distroless/static:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 WORKDIR /
 COPY --from=builder /workspace/manager .
 # Use uid of nonroot user (65532) because kubernetes expects numeric user when applying pod security policies
